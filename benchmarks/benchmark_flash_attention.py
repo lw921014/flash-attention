@@ -37,11 +37,11 @@ def attention_ref(qkv, attn_mask, dropout_p, upcast=False, causal=False):
 
 
 torch.manual_seed(0)
-repeats = 30
-batch_size = 64
-nheads = 16
-seqlen = 1024
-n = 1024
+repeats = 1
+batch_size = 440
+nheads = 24
+seqlen = 49
+n = 768
 d = n // nheads
 dropout_p = 0.1
 causal = False
@@ -63,7 +63,7 @@ qkv_unpad = rearrange(Wqkv(x_unpad), 'nnz (t h d) -> nnz t h d', t=3,
 qkv = rearrange(Wqkv(x), 'b s (t h d) -> b s t h d', t=3, h=nheads).detach().requires_grad_()
 
 fn = lambda qkv_unpad: flash_attn_unpadded_qkvpacked_func(
-    qkv_unpad, cu_seqlens, max_seqlen_in_batch, dropout_p, causal=causal
+    qkv_unpad, cu_seqlens, max_seqlen_in_batch, dropout_p, causal=causal, attn_mask=attention_mask
 )
 benchmark_all(fn, qkv_unpad, repeats=repeats, desc='FlashAttention')
 fn = lambda qkv: attention_ref(qkv, attention_mask_bool, dropout_p, causal=causal)

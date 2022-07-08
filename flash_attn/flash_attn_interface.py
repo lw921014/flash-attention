@@ -15,10 +15,10 @@ def _get_block_size(device, head_dim, is_dropout):
 
 
 def _flash_attn_forward(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p,
-                        softmax_scale, causal, return_softmax):
+                        softmax_scale, causal, return_softmax, attn_mask):
     out, softmax_lse, *rest = flash_attn_cuda.fwd(
         q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p, softmax_scale,
-        False, causal, return_softmax, None
+        False, causal, return_softmax, None, attn_mask
     )
     # if out.isnan().any() or softmax_lse.isnan().any():
     #     breakpoint()
@@ -39,14 +39,17 @@ def _flash_attn_backward(dout, q, k, v, out, softmax_lse, dq, dk, dv, cu_seqlens
 class FlashAttnQKVPackedFunc(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale, causal, return_softmax):
+    def forward(ctx, qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale, causal, return_softmax, attn_mask):
         # Save rng_state because the backward pass will regenerate the dropout mask
         rng_state = torch.cuda.get_rng_state() if dropout_p > 0 else None
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
+        print("Q shape: ", qkv[:, 0].shape)
+        print("AttnMask shape: ", attn_mask.shape)
         out, softmax_lse, S_dmask = _flash_attn_forward(
             qkv[:, 0], qkv[:, 1], qkv[:, 2], cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
-            dropout_p, softmax_scale, causal=causal, return_softmax=return_softmax
+            dropout_p, softmax_scale, causal=causal, return_softmax=return_softmax,
+            attn_mask=attn_mask
         )
         ctx.save_for_backward(qkv, out, softmax_lse, cu_seqlens, rng_state)
         ctx.dropout_p = dropout_p
@@ -149,7 +152,7 @@ class FlashAttnFunc(torch.autograd.Function):
 
 
 def flash_attn_unpadded_qkvpacked_func(qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale=None,
-                                       causal=False, return_attn_probs=False):
+                                       causal=False, return_attn_probs=False, attn_mask=None):
     """dropout_p should be set to 0.0 during evaluation
     Arguments:
         qkv: (total, 3, nheads, headdim), where total = total number of tokens in the batch.
@@ -173,7 +176,7 @@ def flash_attn_unpadded_qkvpacked_func(qkv, cu_seqlens, max_seqlen, dropout_p, s
             pattern (negative means that location was dropped, nonnegative means it was kept).
     """
     return FlashAttnQKVPackedFunc.apply(qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale,
-                                        causal, return_attn_probs)
+                                        causal, return_attn_probs, attn_mask)
 
 
 def flash_attn_unpadded_kvpacked_func(q, kv, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,

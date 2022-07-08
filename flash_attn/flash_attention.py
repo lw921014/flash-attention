@@ -37,7 +37,6 @@ class FlashAttention(nn.Module):
                          many query each sequence in the batch consists of
         """
         assert not need_weights
-        assert attn_mask is None
         assert qkv.dtype == torch.float16
         assert qkv.is_cuda
 
@@ -113,6 +112,6 @@ class FlashMHA(nn.Module):
             qkv = torch.stack([query, key, value], dim=2)
         else:
             qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.num_heads)
-        context, attn_weights = self.inner_attn(qkv, key_padding_mask=key_padding_mask,
+        context, attn_weights = self.inner_attn(qkv, attn_mask=attn_mask, key_padding_mask=key_padding_mask,
                                                 need_weights=need_weights, causal=self.causal)
         return self.out_proj(rearrange(context, 'b s h d -> b s (h d)')), attn_weights

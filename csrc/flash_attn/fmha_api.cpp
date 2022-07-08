@@ -1,7 +1,7 @@
 /******************************************************************************
  * Copyright (c) 2022, Tri Dao.
  * Copyright (c) 2011-2021, NVIDIA CORPORATION.  All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -12,7 +12,7 @@
  *     * Neither the name of the NVIDIA CORPORATION nor the
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -53,7 +53,8 @@ void set_params_fprop(FMHA_fprop_params &params,
                       void *softmax_lse_d,
                       float p_dropout,
                       float softmax_scale,
-                      bool is_causal) {
+                      bool is_causal,
+                      const at::Tensor attn_mask) {
 
     Data_type acc_type = DATA_TYPE_FP32;
     Data_type data_type = DATA_TYPE_FP16;
@@ -112,6 +113,8 @@ void set_params_fprop(FMHA_fprop_params &params,
     set_alpha(params.scale_dropout, params.rp_dropout, data_type);
 
     params.is_causal = is_causal;
+
+    params.attn_mask_ptr = attn_mask.data_ptr();
 }
 
 void set_params_dgrad(FMHA_dgrad_params &params,
@@ -181,7 +184,8 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
         const bool zero_tensors,
         const bool is_causal,
         const bool return_softmax,
-        c10::optional<at::Generator> gen_) {
+        c10::optional<at::Generator> gen_,
+        const at::Tensor &attn_mask) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
     bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
@@ -274,7 +278,8 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
                      softmax_lse.data_ptr(),
                      p_dropout,
                      softmax_scale,
-                     is_causal);
+                     is_causal,
+                     attn_mask);
 
     run_fmha_fp16_sm80(launch_params, /*configure=*/ true);
     // number of times random will be generated per thread, to offset philox counter in thc random
