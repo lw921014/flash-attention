@@ -227,6 +227,8 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
 
     using Gmem_tile_s = typename Kernel_traits::Gmem_tile_s;
 
+    using Gmem_tile_mask = typename Kernel_traits::Gmem_tile_mask;
+
     using Gmem_softmax_sum = typename Kernel_traits::Gmem_softmax_sum;
 
     using Smem_softmax_sum = typename Kernel_traits::Smem_dp_sum;
@@ -253,6 +255,9 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
     Gmem_tile_o_tmp gmem_o_tmp(params.o_tmp_ptr, params.o_row_stride_in_elts, params.o_head_stride_in_elts, binfo, tidx);
     // Allocate the global memory tile loader for S.
     Gmem_tile_s gmem_s(params, binfo, tidx);
+    // allocate the global memory tile loader for attn mask.
+    Gmem_tile_mask gmem_mask(params, binfo, tidx);
+
     Gmem_softmax_sum gmem_softmax_lse(params.softmax_lse_ptr, params, tidx);
 
     // Wind gmem tiles to the correct position.
@@ -270,7 +275,8 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
     //     printf("begin = %d, steps = %d\n", begin, steps);
     // }
 
-    fmha::Mask<Cta_tile_p, Is_causal> mask(binfo, tidx, loop_step_idx);
+    fmha::AttnMask<Cta_tile_p, Gmem_tile_mask> mask(binfo, gmem_mask, tidx, loop_step_idx);
+    // fmha::Mask<Cta_tile_p, Is_causal> mask(binfo, tidx, loop_step_idx);
 
     // Allocate the global memory tile loader for K.
     Gmem_tile_k gmem_k(params.k_ptr, params.k_row_stride_in_elts, params.k_head_stride_in_elts, binfo, tidx, false);

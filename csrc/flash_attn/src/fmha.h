@@ -126,6 +126,7 @@ struct FMHA_fprop_params : public Qkv_params {
     bool is_causal;
 
     void * __restrict__ attn_mask_ptr;
+    int attn_mask_batch;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011-2021, NVIDIA CORPORATION.  All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -11,7 +11,7 @@
  *     * Neither the name of the NVIDIA CORPORATION nor the
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -61,10 +61,13 @@ struct FMHA_kernel_traits {
     // The shared memory tile to swizzle V.
     using Smem_tile_v = fmha::Smem_tile_v<Cta_tile_o>;
 
+    // The global memory tile to load attn mask
+    using Gmem_tile_mask = fmha::Gmem_tile_mask<Cta_tile_o>;
+
     // The global memory tile to store O.
     using Gmem_tile_o = fmha::Gmem_tile_o<Cta_tile_o>;
     // The shared memory tile for O.
-    using Smem_tile_o = fmha::Smem_tile_o<Cta_tile_o>;;
+    using Smem_tile_o = fmha::Smem_tile_o<Cta_tile_o>;
 
     // The global memory tile to load/store S.
     using Gmem_tile_s = fmha::Gmem_tile_mma_s<Cta_tile_p>;

@@ -86,12 +86,12 @@ struct Mask {
     const int actual_seqlen_k;
 };
 
-template<typename Cta_tile, bool Is_causal=false>
+template<typename Cta_tile, typename Gmem_tile>
 struct AttnMask {
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 
     template<typename BInfo>
-    __device__ AttnMask(const BInfo &binfo, int tidx, const int loop_step_idx_ = 0)
+    __device__ AttnMask(const BInfo &binfo, const Gmem_tile &tile, int tidx, const int loop_step_idx_ = 0)
         : actual_seqlen_k(binfo.actual_seqlen_k - loop_step_idx_ * Cta_tile::N)
         , loop_step_idx(loop_step_idx_) {
 

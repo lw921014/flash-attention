@@ -322,14 +322,12 @@ struct Gmem_tile_mask {
     static constexpr int STGS = STGS_PER_LOOP * LOOPS;
 
     // Ctor.
-    template<typename BInfo>
-    // inline __device__ Gmem_tile_o(void *ptr, const size_t row_stride_in_elts, const BInfo &binfo, const int tidx)
-    inline __device__ Gmem_tile_mask(void *ptr, const uint32_t row_stride_in_elts,
-                                  const uint32_t head_stride_in_elts, const BInfo &binfo, const int tidx)
+    template<typename Params, typename BInfo>
+    inline __device__ Gmem_tile_mask(const Params &params, const BInfo &binfo, const int tidx)
         : row_stride_in_bytes(row_stride_in_elts * BYTES_PER_ELEMENT)
-        , actual_seqlen_q(binfo.actual_seqlen_q)
-        , ptr_(reinterpret_cast<char *>(ptr))
         , tidx_(tidx) {
+
+        ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr);
 
         // Compute the position in the sequence (within the CTA for the moment).
         int row = tidx / THREADS_PER_ROW;
@@ -400,15 +398,15 @@ struct Gmem_tile_mask {
         actual_seqlen_q -= ROWS * steps;
     }
 
-    // The stride between rows for the QKV matrice.
+    // The stride between rows for the attn mask.
     // int64_t row_stride_in_bytes;
     const uint32_t row_stride_in_bytes;
     // The pointer.
     char *ptr_;
     // Is the thread active for the last STG?
     int is_active_for_last_stg_;
-    // The length of the sequence loaded by that memory tile.
-    int actual_seqlen_q;
+
+    const Gmem_tile tile_;
     const int tidx_;
 };
 

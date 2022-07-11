@@ -115,6 +115,7 @@ void set_params_fprop(FMHA_fprop_params &params,
     params.is_causal = is_causal;
 
     params.attn_mask_ptr = attn_mask.data_ptr();
+    params.attn_mask_batch = attn_mask.sizes()[0]; // window_count for WindowAttention
 }
 
 void set_params_dgrad(FMHA_dgrad_params &params,

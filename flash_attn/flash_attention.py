@@ -50,7 +50,7 @@ class FlashAttention(nn.Module):
                                         device=qkv.device)
                 output = flash_attn_unpadded_qkvpacked_func(
                     qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                    softmax_scale=self.softmax_scale, causal=causal
+                    softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
                 )
                 output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
             else:
@@ -61,7 +61,7 @@ class FlashAttention(nn.Module):
                 x_unpad = rearrange(x_unpad, 'nnz (three h d) -> nnz three h d', three=3, h=nheads)
                 output_unpad = flash_attn_unpadded_qkvpacked_func(
                     x_unpad, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                    softmax_scale=self.softmax_scale, causal=causal
+                    softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
                 )
                 output = rearrange(pad_input(rearrange(output_unpad, 'nnz h d -> nnz (h d)'),
                                             indices, batch_size, seqlen),
@@ -70,7 +70,7 @@ class FlashAttention(nn.Module):
             assert max_s is not None
             output = flash_attn_unpadded_qkvpacked_func(
                 qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                softmax_scale=self.softmax_scale, causal=causal
+                softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
             )
 
         return output, None
