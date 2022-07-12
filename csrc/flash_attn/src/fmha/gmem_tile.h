@@ -288,7 +288,7 @@ template<
     int BYTES_PER_ELEMENT = 2
 >
 struct Gmem_tile_mask {
-    // Mask shape: [1, num_heads, 1, seqlen, seqlen]
+    // Mask shape: [1, mWins, 1, seqlen, seqlen]
 
     static_assert(BYTES_PER_ELEMENT == 2 || BYTES_PER_ELEMENT == 4);
 
@@ -324,10 +324,17 @@ struct Gmem_tile_mask {
     // Ctor.
     template<typename Params, typename BInfo>
     inline __device__ Gmem_tile_mask(const Params &params, const BInfo &binfo, const int tidx)
-        : row_stride_in_bytes(row_stride_in_elts * BYTES_PER_ELEMENT)
+        : row_stride_in_bytes(params.seqlen_q * BYTES_PER_ELEMENT)
+        , actual_seqlen_q(binfo.actual_seqlen_q)
         , tidx_(tidx) {
-
-        ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr);
+        
+        int bidb = binfo.bidb; // batch id
+        // for bid offset, cause the input dim is [1, mWins, 1, N, N]
+        // mWins the numbers of windows, N is the seq len
+        // the dim of q*kt is  [B / mWins, mWins, num, N, N]
+        int bidb_offset = bidb / params.attn_mask_batch; 
+        ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr) + 
+                bidb_offset * COLS * ROWS * BYTES_PER_ELEMENT;
 
         // Compute the position in the sequence (within the CTA for the moment).
         int row = tidx / THREADS_PER_ROW;
@@ -337,7 +344,6 @@ struct Gmem_tile_mask {
         // The row offset in the batched GEMM.
         // int64_t row_offset = (int64_t)row * row_stride_in_bytes + binfo.bidx * BYTES_PER_ROW;
         uint32_t row_offset = (uint32_t)((binfo.sum_s_q + row) * row_stride_in_bytes);
-        row_offset += (uint32_t)(binfo.bidh * head_stride_in_elts * BYTES_PER_ELEMENT);
         // Assemble the final pointer.
         ptr_ += row_offset + col * BYTES_PER_STG;
 
@@ -395,7 +401,7 @@ struct Gmem_tile_mask {
         // row_ += ROWS * steps;
         // ptr_ += (int64_t)ROWS * row_stride_in_bytes * steps;
         ptr_ += (uint32_t)ROWS * row_stride_in_bytes * steps;
-        actual_seqlen_q -= ROWS * steps;
+        this->actual_seqlen_q -= ROWS * steps;
     }
 
     // The stride between rows for the attn mask.
@@ -405,8 +411,8 @@ struct Gmem_tile_mask {
     char *ptr_;
     // Is the thread active for the last STG?
     int is_active_for_last_stg_;
-
-    const Gmem_tile tile_;
+    int actual_seqlen_q;
+    // const Gmem_tile tile_;
     const int tidx_;
 };
 

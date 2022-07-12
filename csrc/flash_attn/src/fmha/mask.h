@@ -86,7 +86,7 @@ struct Mask {
     const int actual_seqlen_k;
 };
 
-template<typename Cta_tile, typename Gmem_tile>
+template<typename Cta_tile, typename Gmem_tile, bool Is_causal=false>
 struct AttnMask {
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 

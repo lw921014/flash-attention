@@ -33,7 +33,6 @@
 
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 
-
 void set_params_fprop(FMHA_fprop_params &params,
                       // sizes
                       const size_t b,
@@ -53,9 +52,7 @@ void set_params_fprop(FMHA_fprop_params &params,
                       void *softmax_lse_d,
                       float p_dropout,
                       float softmax_scale,
-                      bool is_causal,
-                      const at::Tensor attn_mask) {
-
+                      bool is_causal) {
     Data_type acc_type = DATA_TYPE_FP32;
     Data_type data_type = DATA_TYPE_FP16;
 
@@ -113,7 +110,47 @@ void set_params_fprop(FMHA_fprop_params &params,
     set_alpha(params.scale_dropout, params.rp_dropout, data_type);
 
     params.is_causal = is_causal;
+}
 
+void set_params_fprop_with_mask(FMHA_fprop_params &params,
+                      // sizes
+                      const size_t b,
+                      const size_t seqlen_q,
+                      const size_t seqlen_k,
+                      const size_t h,
+                      const size_t d,
+                      // device pointers
+                      const at::Tensor q,
+                      const at::Tensor k,
+                      const at::Tensor v,
+                      void *cu_seqlens_q_d,
+                      void *cu_seqlens_k_d,
+                      void *o_packed_d,
+                      void *o_tmp_d,
+                      void *s_d,
+                      void *softmax_lse_d,
+                      float p_dropout,
+                      float softmax_scale,
+                      bool is_causal,
+                      const at::Tensor attn_mask) {
+    set_params_fprop(params,
+                     b,
+                     seqlen_q,
+                     seqlen_k,
+                     h,
+                     d,
+                     q,
+                     k,
+                     v,
+                     cu_seqlens_q_d,
+                     cu_seqlens_k_d,
+                     o_packed_d,
+                     o_tmp_d,
+                     s_d,
+                     softmax_lse_d,
+                     p_dropout,
+                     softmax_scale,
+                     is_causal);
     params.attn_mask_ptr = attn_mask.data_ptr();
     params.attn_mask_batch = attn_mask.sizes()[0]; // window_count for WindowAttention
 }
@@ -264,7 +301,7 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
         gen_, at::cuda::detail::getDefaultCUDAGenerator());
 
-    set_params_fprop(launch_params.params,
+    set_params_fprop_with_mask(launch_params.params,
                      batch_size,
                      max_seqlen_q,
                      max_seqlen_k,
