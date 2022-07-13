@@ -197,7 +197,7 @@ constexpr size_t get_dynamic_smem_size(){
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Return_softmax, bool Is_first, bool Is_last, typename Params, typename Prng>
 inline __device__ void device_1xN_(const Params &params, const int bidb, const int bidh, int begin, int steps, Prng &ph0, Prng &ph1, const int loop_step_idx) {
 
-
+    printf("%s:%d : break point\n", __FILE__, __LINE__);
     // The description of the CTA tile for the 1st batched GEMM.
     using Cta_tile_p = typename Kernel_traits::Cta_tile_p;
     // The description of the CTA tile for the 2nd batched GEMM.
@@ -386,6 +386,7 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
         softmax.unpack_noscale(acc_p);
 
         // Apply the mask.
+        printf("apply mask\n");
         softmax.apply_mask(mask);
 
         if( Kernel_traits::SHARE_SMEM_FOR_K_AND_V && l == 0 ) {
@@ -642,8 +643,8 @@ inline __device__ void device_1xN_loop(const Params &params) {
 
     constexpr int blocksize_c = Kernel_traits::Cta_tile_p::N;
 
-    printf("bidb: %d, bidh: %d, tidx: %d, tidx_global: %d, M: %d, N: %d, STEPS: %d\n", bidb, bidh, tidx, tidx_global, M, blocksize_c, STEPS);
-    printf("[params] h: %d, b: %d, seqlen_q: %d, seqlen_k: %d, d: %d, blockDim.x: %d, blockDim.y: %d\n", params.h, params.b, params.seqlen_q, params.seqlen_k, params.d, blockDim.x, blockDim.y);
+    // printf("bidb: %d, bidh: %d, tidx: %d, tidx_global: %d, M: %d, N: %d, STEPS: %d\n", bidb, bidh, tidx, tidx_global, M, blocksize_c, STEPS);
+    // printf("[params] h: %d, b: %d, seqlen_q: %d, seqlen_k: %d, d: %d, blockDim.x: %d, blockDim.y: %d\n", params.h, params.b, params.seqlen_q, params.seqlen_k, params.d, blockDim.x, blockDim.y);
 
     if (params.seqlen_k == blocksize_c) {
         fmha::device_1xN_<Kernel_traits, Is_dropout, Is_causal, Return_softmax, true, true>(params, bidb, bidh, 0, STEPS, ph0, ph1, 0);

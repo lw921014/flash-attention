@@ -122,6 +122,8 @@ struct AttnMask {
         // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
         //     printf("current_col=%d, current_row=%d, actual_seqlen_k=%d, col_valid=%d, all_valid=%d\n", current_col, current_row, actual_seqlen_k, col_valid, all_valid);
         // }
+        printf("Is_causal = %d, col_valid = %d, current_col = %d, current_row = %d, loop_step_idx = %d\n",
+                    Is_causal, col_valid, current_col, current_row, loop_step_idx);
         return Is_causal ? col_valid && (current_col + loop_step_idx * Cta_tile::N <= current_row) : col_valid;
         // return row_valid && col_valid;
     }
