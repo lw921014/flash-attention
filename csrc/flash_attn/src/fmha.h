@@ -129,6 +129,25 @@ struct FMHA_fprop_params : public Qkv_params {
     int attn_mask_batch;
 };
 
+__device__ __host__ inline void dump_FMHA_fprop_params(const FMHA_fprop_params& params) {
+    printf("========================================\n");
+    printf("params.q_row_stride_in_elts = %d \n", params.q_row_stride_in_elts);
+    printf("params.k_row_stride_in_elts = %d \n", params.k_row_stride_in_elts);
+    printf("params.v_row_stride_in_elts = %d \n", params.v_row_stride_in_elts);
+    printf("params.q_head_stride_in_elts = %d \n", params.q_head_stride_in_elts);
+    printf("params.k_head_stride_in_elts = %d \n", params.k_head_stride_in_elts);
+    printf("params.v_head_stride_in_elts = %d \n", params.v_head_stride_in_elts);
+    printf("params.h = %d \n", params.h);
+    printf("params.b = %d \n", params.b);
+    printf("params.seqlen_q = %d \n", params.seqlen_q);
+    printf("params.seqlen_k = %d \n", params.seqlen_k); 
+    printf("params.d = %d \n", params.d);
+    printf("params.o_row_stride_in_elts = %d \n", params.o_row_stride_in_elts);
+    printf("params.o_head_stride_in_elts = %d \n", params.o_head_stride_in_elts);
+    printf("params.s_stride_in_bytes = %d \n", params.s_stride_in_bytes);
+    printf("params.attn_mask_batch = %d \n", params.attn_mask_batch);
+    printf("========================================\n");
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 struct FMHA_dgrad_params : public FMHA_fprop_params {

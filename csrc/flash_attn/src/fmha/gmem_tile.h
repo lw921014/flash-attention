@@ -39,11 +39,12 @@ template<
     // The number of rows of Q, K or V loaded by this tile.
     int ROWS_,
     // The number of columns.
-    int COLS
+    int COLS_
 >
 struct Gmem_tile_qkv {
 
     using Cta_tile = Cta_tile_;
+    static constexpr int COLS = COLS_;
 
     static constexpr int BYTES_PER_ELEMENT = BITS_PER_ELEMENT / 8;
     // The size of each LDG.

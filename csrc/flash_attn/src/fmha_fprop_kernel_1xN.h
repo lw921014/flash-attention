@@ -37,6 +37,10 @@ namespace fmha {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+__device__ inline bool debug() {
+    return blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0;
+}
+
 template<typename Kernel_traits>
 struct Gemm_Q_K_base {
     using Smem_tile_o = typename Kernel_traits::Smem_tile_o;
@@ -196,8 +200,6 @@ constexpr size_t get_dynamic_smem_size(){
 
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Return_softmax, bool Is_first, bool Is_last, typename Params, typename Prng>
 inline __device__ void device_1xN_(const Params &params, const int bidb, const int bidh, int begin, int steps, Prng &ph0, Prng &ph1, const int loop_step_idx) {
-
-    printf("%s:%d : break point\n", __FILE__, __LINE__);
     // The description of the CTA tile for the 1st batched GEMM.
     using Cta_tile_p = typename Kernel_traits::Cta_tile_p;
     // The description of the CTA tile for the 2nd batched GEMM.
@@ -236,6 +238,83 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
     using Gemm1 = Gemm_Q_K<Kernel_traits, Kernel_traits::K_IN_REGS>;
 
     using Softmax = fmha::Softmax<Cta_tile_p, Kernel_traits>;
+
+#ifdef #ifndef DEBUG_USING_CU
+    // NOTE only print debug infor in first thread
+    if (debug()) {
+        // Cta_tile_p
+        printf("Cta_tile_p::M = %d, Cta_tile_p::N = %d, Cta_tile_p::K = %d\n",
+                Cta_tile_p::M, Cta_tile_p::N, Cta_tile_p::K);
+        printf("Cta_tile_p::WARPS_M = %d, Cta_tile_p::WARPS_N = %d, Cta_tile_p::WARPS_K = %d\n",
+                Cta_tile_p::WARPS_M, Cta_tile_p::WARPS_N, Cta_tile_p::WARPS_K);
+        printf("Cta_tile_p::WARPS_PER_CTA = %d, Cta_tile_p::THREADS_PER_WARP = %d, Cta_tile_p::THREADS_PER_CTA = %d\n",
+                Cta_tile_p::WARPS_PER_CTA, Cta_tile_p::THREADS_PER_WARP, Cta_tile_p::THREADS_PER_CTA);
+        printf("\n");
+
+        // Cta_tile_o
+        printf("Cta_tile_o::M = %d, Cta_tile_o::N = %d, Cta_tile_o::K = %d\n",
+                Cta_tile_o::M, Cta_tile_o::N, Cta_tile_o::K);
+        printf("Cta_tile_o::WARPS_M = %d, Cta_tile_o::WARPS_N = %d, Cta_tile_o::WARPS_K = %d\n",
+                Cta_tile_o::WARPS_M, Cta_tile_o::WARPS_N, Cta_tile_o::WARPS_K);
+        printf("Cta_tile_o::WARPS_PER_CTA = %d, Cta_tile_o::THREADS_PER_WARP = %d, Cta_tile_o::THREADS_PER_CTA = %d\n",
+                Cta_tile_o::WARPS_PER_CTA, Cta_tile_o::THREADS_PER_WARP, Cta_tile_o::THREADS_PER_CTA);
+        printf("\n");
+
+        // Mma_tile_p
+        printf("Mma_tile_p::MMAS_M = %d, Mma_tile_p::MMAS_N = %d, Mma_tile_p::MMAS_K = %d\n",
+                Mma_tile_p::MMAS_M, Mma_tile_p::MMAS_N, Mma_tile_p::MMAS_K);
+        printf("Mma_tile_p::M_PER_MMA_PER_CTA = %d, Mma_tile_p::N_PER_MMA_PER_CTA = %d, Mma_tile_p::K_PER_MMA_PER_CTA = %d\n",
+                Mma_tile_p::M_PER_MMA_PER_CTA, Mma_tile_p::N_PER_MMA_PER_CTA, Mma_tile_p::K_PER_MMA_PER_CTA);
+        printf("\n");
+
+        // Mma_tile_o
+        printf("Mma_tile_o::MMAS_M = %d, Mma_tile_o::MMAS_N = %d, Mma_tile_o::MMAS_K = %d\n",
+                Mma_tile_o::MMAS_M, Mma_tile_o::MMAS_N, Mma_tile_o::MMAS_K);
+        printf("Mma_tile_o::M_PER_MMA_PER_CTA = %d, Mma_tile_o::N_PER_MMA_PER_CTA = %d, Mma_tile_o::K_PER_MMA_PER_CTA = %d\n",
+                Mma_tile_o::M_PER_MMA_PER_CTA, Mma_tile_o::N_PER_MMA_PER_CTA,  Mma_tile_o::K_PER_MMA_PER_CTA);
+        printf("\n");
+
+        // Gmem_tile_q
+        printf("Gmem_tile_q::BYTES_PER_ELEMENT = %d, Gmem_tile_q::ROWS = %d, Gmem_tile_q::COLS = %d,  Gmem_tile_q::LDGS = %d\n",
+            Gmem_tile_q::BYTES_PER_ELEMENT, Gmem_tile_q::ROWS, Gmem_tile_q::COLS,  Gmem_tile_q::LDGS);
+        printf("\n");
+
+        // Gmem_tile_k
+        printf("Gmem_tile_k::BYTES_PER_ELEMENT = %d, Gmem_tile_k::ROWS = %d, Gmem_tile_k::COLS = %d,  Gmem_tile_k::LDGS = %d\n",
+            Gmem_tile_k::BYTES_PER_ELEMENT, Gmem_tile_k::ROWS, Gmem_tile_k::COLS,  Gmem_tile_k::LDGS);
+        printf("\n");
+
+        // Gmem_tile_v
+        printf("Gmem_tile_v::BYTES_PER_ELEMENT = %d, Gmem_tile_v::ROWS = %d, Gmem_tile_v::ROWS = %d,  Gmem_tile_v::LDGS = %d\n",
+            Gmem_tile_v::BYTES_PER_ELEMENT, Gmem_tile_v::ROWS, Gmem_tile_v::ROWS,  Gmem_tile_v::LDGS);
+        printf("\n");
+
+        // Gmem_tile_o
+        printf("Gmem_tile_o::ROWS = %d, Gmem_tile_o::COLS = %d, Gmem_tile_o::STGS = %d,  Gmem_tile_o::STGS_PER_LOOP = %d\n",
+            Gmem_tile_o::ROWS, Gmem_tile_o::COLS, Gmem_tile_o::STGS, Gmem_tile_o::STGS_PER_LOOP);
+        printf("\n");
+
+        // Gmem_tile_s
+        printf("Gmem_tile_s::M = %d, Gmem_tile_s::N = %d\n",
+            Gmem_tile_s::M, Gmem_tile_s::N);
+        printf("\n");
+
+        // Gmem_softmax_sum
+        printf("Gmem_softmax_sum::MMAS_M = %d, Gmem_softmax_sum::ROWS = %d\n",
+            Gmem_softmax_sum::MMAS_M, Gmem_softmax_sum::ROWS);
+        printf("\n");
+        
+        // Gemm1
+        printf("Gemm1::SHARE_SMEM_FOR_K_AND_V = %d, Gemm1::SMEM_OFFSET_O = %d, Gemm1::SMEM_OFFSET_SOFTMAX = %d, Gemm1::SMEM_OFFSET_V = %d, Gemm1::SMEM_OFFSET_V = %d\n",
+            Gemm1::SHARE_SMEM_FOR_K_AND_V, Gemm1::SMEM_OFFSET_O, Gemm1::SMEM_OFFSET_SOFTMAX, Gemm1::SMEM_OFFSET_V, Gemm1::SMEM_OFFSET_V);
+        printf("\n");
+        
+        // Softmax
+        printf("Softmax::WARPS_M = %d, Softmax::WARPS_N = %d, Softmax::MMAS_M = %d, Softmax::MMAS_N = %d\n",
+            Softmax::WARPS_M, Softmax::WARPS_N, Softmax::MMAS_M, Softmax::MMAS_N);
+        printf("\n");
+    }
+#endif
 
     // Shared memory.
     extern __shared__ char smem_[];
@@ -386,7 +465,7 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
         softmax.unpack_noscale(acc_p);
 
         // Apply the mask.
-        printf("apply mask\n");
+        // printf("apply mask\n");
         softmax.apply_mask(mask);
 
         if( Kernel_traits::SHARE_SMEM_FOR_K_AND_V && l == 0 ) {
@@ -645,11 +724,25 @@ inline __device__ void device_1xN_loop(const Params &params) {
 
     // printf("bidb: %d, bidh: %d, tidx: %d, tidx_global: %d, M: %d, N: %d, STEPS: %d\n", bidb, bidh, tidx, tidx_global, M, blocksize_c, STEPS);
     // printf("[params] h: %d, b: %d, seqlen_q: %d, seqlen_k: %d, d: %d, blockDim.x: %d, blockDim.y: %d\n", params.h, params.b, params.seqlen_q, params.seqlen_k, params.d, blockDim.x, blockDim.y);
+#ifdef #ifndef DEBUG_USING_CU
+    if (debug()) {
+        dump_FMHA_fprop_params(params);
+        printf("device_1xN_loop::M = %d, device_1xN_loop::STEPS = %d,  device_1xN_loop::blocksize_c = %d\n", 
+            M, STEPS, blocksize_c);
+        printf("\n");
+    }
+#endif
 
     if (params.seqlen_k == blocksize_c) {
         fmha::device_1xN_<Kernel_traits, Is_dropout, Is_causal, Return_softmax, true, true>(params, bidb, bidh, 0, STEPS, ph0, ph1, 0);
     } else {
         const int max_loop_steps = (params.seqlen_k + blocksize_c - 1) / blocksize_c;
+#ifdef #ifndef DEBUG_USING_CU
+        if (debug()) {
+            printf("device_1xN_loop::max_loop_steps = %d\n", max_loop_steps);
+            printf("\n");
+        }
+#endif
         fmha::device_1xN_<Kernel_traits, Is_dropout, Is_causal, Return_softmax, true, false>(params, bidb, bidh, 0, STEPS, ph0, ph1, 0);
         for (int loop_step_idx = 1; loop_step_idx < max_loop_steps - 1; loop_step_idx++) {
             fmha::device_1xN_<Kernel_traits, Is_dropout, Is_causal, Return_softmax, false, false>(params, bidb, bidh, 0, STEPS, ph0, ph1, loop_step_idx);
