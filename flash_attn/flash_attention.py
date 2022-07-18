@@ -73,7 +73,7 @@ class FlashAttention(nn.Module):
                 softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
             )
 
-        return output, None
+        return output
 
 
 class FlashMHA(nn.Module):
@@ -112,6 +112,6 @@ class FlashMHA(nn.Module):
             qkv = torch.stack([query, key, value], dim=2)
         else:
             qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.num_heads)
-        context, attn_weights = self.inner_attn(qkv, attn_mask=attn_mask, key_padding_mask=key_padding_mask,
+        context = self.inner_attn(qkv, attn_mask=attn_mask, key_padding_mask=key_padding_mask,
                                                 need_weights=need_weights, causal=self.causal)
-        return self.out_proj(rearrange(context, 'b s h d -> b s (h d)')), attn_weights
+        return self.out_proj(rearrange(context, 'b s h d -> b s (h d)'))

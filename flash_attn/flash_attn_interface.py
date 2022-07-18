@@ -44,8 +44,6 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
         rng_state = torch.cuda.get_rng_state() if dropout_p > 0 else None
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
-        print("Q shape: ", qkv[:, 0].shape)
-        print("AttnMask shape: ", attn_mask.shape)
         out, softmax_lse, S_dmask = _flash_attn_forward(
             qkv[:, 0], qkv[:, 1], qkv[:, 2], cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
             dropout_p, softmax_scale, causal=causal, return_softmax=return_softmax,
@@ -72,7 +70,7 @@ class FlashAttnQKVPackedFunc(torch.autograd.Function):
         )
         if rng_state is not None:
             torch.cuda.set_rng_state(cur_rng_state)
-        return dqkv, None, None, None, None, None, None
+        return dqkv, None, None, None, None, None, None, None
 
 
 class FlashAttnKVPackedFunc(torch.autograd.Function):
