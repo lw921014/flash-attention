@@ -325,9 +325,9 @@ struct __align__(32) Gmem_tile_mask  {
     // Ctor.
     template<typename Params, typename BInfo>
     inline __device__ Gmem_tile_mask(const Params &params, const BInfo &binfo, const int tidx)
-        : row_stride_in_bytes(binfo.actual_seqlen_k * BYTES_PER_ELEMENT)
-        , actual_seqlen_q(binfo.actual_seqlen_q)
-        , actual_seqlen_k(binfo.actual_seqlen_k)
+        : row_stride_in_bytes(64 * BYTES_PER_ELEMENT)
+        , actual_seqlen_q(64)
+        , actual_seqlen_k(64)
         , tidx_(tidx) {
         
         int bidb = binfo.bidb; // batch id
@@ -337,7 +337,7 @@ struct __align__(32) Gmem_tile_mask  {
 
         int bidb_offset = bidb % params.attn_mask_batch; 
         ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr) + 
-                bidb_offset * binfo.actual_seqlen_q * binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
+                bidb_offset * actual_seqlen_q * actual_seqlen_k * BYTES_PER_ELEMENT;
 
         // Compute the position in the sequence (within the CTA for the moment).
         int row = tidx / THREADS_PER_ROW;
@@ -357,10 +357,8 @@ struct __align__(32) Gmem_tile_mask  {
         const void *ptrs[LDGS];
         uint32_t preds[LDGS];
         #pragma unroll
-        printf("ptr_ = %p\n", ptr_);
         for( int ii = 0; ii < LDGS; ++ii ) {
             ptrs[ii] = ptr_ + (uint32_t)ii * ROWS_PER_LDG * row_stride_in_bytes;
-            printf("ptrs[ii] = %p\n", ptrs[ii]);
             preds[ii] = ((row_ + ii * ROWS_PER_LDG) < min(ROWS, actual_seqlen_q) && col < min(COLS, actual_seqlen_k));
             fetch_[ii] = make_uint4(0, 0, 0, 0);
         }

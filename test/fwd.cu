@@ -10,9 +10,9 @@ void test_fwd() {
     int nheads = 12;
     int headdim = 32;
     int batch_size = 16;
-    int window_size = 8;
-    int max_seqlen_q_ = window_size * window_size;
-    int max_seqlen_k_ =  window_size * window_size;
+    int window_size = 7;
+    int max_seqlen_q_ = 64; // window_size * window_size;
+    int max_seqlen_k_ =  64; // window_size * window_size;
     float p_dropout = 0.0;
     float softmax_scale = 0.1;
     bool zero_tensors = false;
@@ -30,7 +30,7 @@ void test_fwd() {
     }
     auto cu_seqlens_q = cu_seqlens_q_cpu.cuda();
     auto cu_seqlens_k = cu_seqlens_k_cpu.cuda();
-    at::Tensor attn_mask = at::zeros({mWins, max_seqlen_q_, max_seqlen_k_}, at::kHalf).cuda();
+    at::Tensor attn_mask = at::ones({mWins, max_seqlen_q_, max_seqlen_k_}, at::kHalf).triu().cuda();
     c10::optional<at::Generator> gen_;
     std::vector<at::Tensor> ret = mha_fwd(
             q,         // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i

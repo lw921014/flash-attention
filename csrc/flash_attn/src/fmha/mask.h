@@ -128,27 +128,25 @@ struct AttnMask {
 
         int uint4_offset = mi * 2 + ni;
 #ifdef DEBUG_USING_CU
-        printf("mi = %d, ni = %d, ii = %d, jj = %d, LDGS = %d, uint4_offset = %d\n",  
-            mi, ni, ii, jj, mask_tile->LDGS, uint4_offset);
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            printf("mi = %d, ni = %d, ii = %d, jj = %d, LDGS = %d, uint4_offset = %d\n",  
+                mi, ni, ii, jj, mask_tile->LDGS, uint4_offset);
+        }
 #endif
         if (mi != 0 || ni > 1) {
             return false;
         }
-        printf(" mask_tile->fetch_ = %p \n", &mask_tile->fetch_);
-        uint4 data = mask_tile->fetch_[uint4_offset];
-        printf ("data.x = %d \n", data.x);
-        printf ("data.y = %d \n", data.y);
-        printf ("data.z = %d \n", data.z);
-        printf ("data.w = %d \n", data.w);
-        // cutlass::half_t value = *(reinterpret_cast<cutlass::int*>(&mask_tile->fetch_[mi * 2 + ni]));
-        // cutlass::half_t value = *(reinterpret_cast<cutlass::half_t*>(&mask_tile->fetch_[mi * 2 + ni]) + ii * 4 + jj);
-        bool valid = true;
-        // valid = float(value) > 0.0f;
 
-// #ifdef DEBUG_USING_CU
-//         printf("mi = %d, ni = %d, ii = %d, jj = %d, value = %f, valid = %d, LDGS = %d\n",
-//                 mi, ni, ii, jj, float(value), valid, mask_tile->LDGS);
-// #endif
+        cutlass::half_t value = *(reinterpret_cast<cutlass::half_t*>(&mask_tile->fetch_[mi * 2 + ni]) + ii * 4 + jj);
+        bool valid = true;
+        valid = float(value) > 0.0f;
+
+#ifdef DEBUG_USING_CU
+        if (blockIdx.x == 0 && blockIdx.y == 0) {
+            printf("mi = %d, ni = %d, ii = %d, jj = %d, value = %f, valid = %d, LDGS = %d\n",
+                    mi, ni, ii, jj, float(value), valid, mask_tile->LDGS);
+        }
+#endif
 
         return valid;
     }
