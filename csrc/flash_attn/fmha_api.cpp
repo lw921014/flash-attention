@@ -136,7 +136,8 @@ void set_params_fprop_with_mask(FMHA_fprop_params &params,
                       float p_dropout,
                       float softmax_scale,
                       bool is_causal,
-                      const at::Tensor attn_mask) {
+                      void*  attn_mask_ptr,
+		      int attn_mask_batch) {
     set_params_fprop(params,
                      b,
                      seqlen_q,
@@ -155,8 +156,8 @@ void set_params_fprop_with_mask(FMHA_fprop_params &params,
                      p_dropout,
                      softmax_scale,
                      is_causal);
-    params.attn_mask_ptr = attn_mask.data_ptr();
-    params.attn_mask_batch = attn_mask.sizes()[0]; // window_count for WindowAttention
+    params.attn_mask_ptr = attn_mask_ptr;
+    params.attn_mask_batch = attn_mask_batch; // window_count for WindowAttention
 }
 
 void set_params_dgrad(FMHA_dgrad_params &params,
@@ -227,7 +228,7 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
         const bool is_causal,
         const bool return_softmax,
         c10::optional<at::Generator> gen_,
-        const at::Tensor &attn_mask) {
+        c10::optional<at::Tensor> attn_mask) {
     
     FMHA_CHECK_CUDA(cudaPeekAtLastError());
 
@@ -307,6 +308,7 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
         gen_, at::cuda::detail::getDefaultCUDAGenerator());
 
+    
     set_params_fprop_with_mask(launch_params.params,
                      batch_size,
                      max_seqlen_q,
@@ -323,7 +325,8 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
                      p_dropout,
                      softmax_scale,
                      is_causal,
-                     attn_mask);
+                     attn_mask.has_value() ? attn_mask.value().data_ptr() : nullptr,
+		     attn_mask.has_value() ? attn_mask.value().sizes()[0] : 0);
 
     run_fmha_fp16_sm80(launch_params, /*configure=*/ true);
     // number of times random will be generated per thread, to offset philox counter in thc random

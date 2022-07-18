@@ -111,6 +111,9 @@ struct AttnMask {
     }
 
     inline __device__ bool is_valid(const int mi, const int ni, const int ii, const int jj) const {
+	if (mask_tile->is_none()) {
+		return false;
+	}
 
         // // ii and jj iterate over the 2x4 fragment
         // // const int current_col = (Is_causal ? loop_step_idx * Cta_tile::N : 0) + ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
