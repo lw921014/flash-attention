@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from einops import rearrange
 
@@ -119,7 +120,7 @@ class FlashMHA(nn.Module):
             # print(attn_mask.size())
             attn_mask = F.pad(attn_mask, (0, 15, 0, 15), mode='constant', value=0)
             # print(attn_mask.size())
-            
+
         context = self.inner_attn(qkv, attn_mask=attn_mask, key_padding_mask=key_padding_mask,
                                                 need_weights=need_weights, causal=self.causal)
         return self.out_proj(rearrange(context, 'b s h d -> b s (h d)'))
