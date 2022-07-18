@@ -214,7 +214,7 @@ struct Softmax_base {
     }
 
     template<bool zero=false, typename Mask>
-    inline __device__ void apply_mask(const Mask &mask) {
+    inline __device__ void apply_mask( const Mask &mask) {
         #pragma unroll
         for( int mi = 0; mi < MMAS_M; ++mi ) {
             #pragma unroll

@@ -239,7 +239,7 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
 
     using Softmax = fmha::Softmax<Cta_tile_p, Kernel_traits>;
 
-#ifdef #ifndef DEBUG_USING_CU
+#ifdef DEBUG_USING_CU
     // NOTE only print debug infor in first thread
     if (debug()) {
         // Cta_tile_p
@@ -292,6 +292,11 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
         // Gmem_tile_o
         printf("Gmem_tile_o::ROWS = %d, Gmem_tile_o::COLS = %d, Gmem_tile_o::STGS = %d,  Gmem_tile_o::STGS_PER_LOOP = %d\n",
             Gmem_tile_o::ROWS, Gmem_tile_o::COLS, Gmem_tile_o::STGS, Gmem_tile_o::STGS_PER_LOOP);
+        printf("\n");
+
+        // Gmem_tile_mask
+        printf("Gmem_tile_mask::ROWS = %d, Gmem_tile_mask::COLS = %d, Gmem_tile_mask::LDGS = %d,  Gmem_tile_mask::LDGS_PER_LOOP = %d\n",
+            Gmem_tile_mask::ROWS, Gmem_tile_mask::COLS, Gmem_tile_mask::LDGS,  Gmem_tile_mask::LDGS_PER_LOOP);        
         printf("\n");
 
         // Gmem_tile_s
@@ -354,7 +359,7 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
     //     printf("begin = %d, steps = %d\n", begin, steps);
     // }
 
-    fmha::AttnMask<Cta_tile_p, Gmem_tile_mask> mask(binfo, gmem_mask, tidx, loop_step_idx);
+    fmha::AttnMask<Cta_tile_p, Gmem_tile_mask> mask(binfo, &gmem_mask, tidx, loop_step_idx);
     // fmha::Mask<Cta_tile_p, Is_causal> mask(binfo, tidx, loop_step_idx);
 
     // Allocate the global memory tile loader for K.
@@ -369,6 +374,14 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
 
     // Allocate the shared memory tile loader for O. We use the same as K so be careful!!!
     Smem_tile_o smem_o(&smem_[Gemm1::SMEM_OFFSET_O], tidx);
+
+#ifdef DEBUG_USING_CU
+    // NOTE only print debug infor in first thread
+    if (debug()) {
+        // AttnMask
+        // printf();
+    }
+#endif
 
     if (!Is_first) {
         gmem_k.move(loop_step_idx);
@@ -724,7 +737,7 @@ inline __device__ void device_1xN_loop(const Params &params) {
 
     // printf("bidb: %d, bidh: %d, tidx: %d, tidx_global: %d, M: %d, N: %d, STEPS: %d\n", bidb, bidh, tidx, tidx_global, M, blocksize_c, STEPS);
     // printf("[params] h: %d, b: %d, seqlen_q: %d, seqlen_k: %d, d: %d, blockDim.x: %d, blockDim.y: %d\n", params.h, params.b, params.seqlen_q, params.seqlen_k, params.d, blockDim.x, blockDim.y);
-#ifdef #ifndef DEBUG_USING_CU
+#ifdef DEBUG_USING_CU
     if (debug()) {
         dump_FMHA_fprop_params(params);
         printf("device_1xN_loop::M = %d, device_1xN_loop::STEPS = %d,  device_1xN_loop::blocksize_c = %d\n", 
@@ -737,7 +750,7 @@ inline __device__ void device_1xN_loop(const Params &params) {
         fmha::device_1xN_<Kernel_traits, Is_dropout, Is_causal, Return_softmax, true, true>(params, bidb, bidh, 0, STEPS, ph0, ph1, 0);
     } else {
         const int max_loop_steps = (params.seqlen_k + blocksize_c - 1) / blocksize_c;
-#ifdef #ifndef DEBUG_USING_CU
+#ifdef DEBUG_USING_CU
         if (debug()) {
             printf("device_1xN_loop::max_loop_steps = %d\n", max_loop_steps);
             printf("\n");

@@ -288,54 +288,56 @@ template<
     typename Cta_tile,
     int BYTES_PER_ELEMENT = 2
 >
-struct Gmem_tile_mask {
+struct __align__(32) Gmem_tile_mask  {
     // Mask shape: [1, mWins, 1, seqlen, seqlen]
 
-    static_assert(BYTES_PER_ELEMENT == 2 || BYTES_PER_ELEMENT == 4);
+    static_assert(BYTES_PER_ELEMENT == 2);
 
     // The mma tile.
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 
     // The size of each element.
     // static constexpr int BYTES_PER_ELEMENT = 2;
-    // The size of each STG.
-    static constexpr int BYTES_PER_STG = BYTES_PER_ELEMENT * 4;
-    static constexpr int COLS = Cta_tile::N;
+    // The size of each LDG.
+    static constexpr int BYTES_PER_LDG = BYTES_PER_ELEMENT * 8;
+    static constexpr int COLS = Cta_tile::K;
     // The size of a row in bytes.
     static constexpr int BYTES_PER_ROW = COLS * BYTES_PER_ELEMENT;
 
-    // The number of threads to store a "row" of the matrix.
-    static constexpr int THREADS_PER_ROW = BYTES_PER_ROW / BYTES_PER_STG;
-    // The number of "rows" stored per iteration of the loop. The output of 1 MMA.
+    // The number of threads to load a "row" of the matrix.
+    static constexpr int THREADS_PER_ROW = BYTES_PER_ROW / BYTES_PER_LDG;
+    // The number of "rows" load per iteration of the loop.
     static constexpr int ROWS = Cta_tile::M;
-    // The number of "rows" stored per iteration of the loop. The output of 1 MMA.
+    // The number of "rows" stored per iteration of the loop.
     static constexpr int ROWS_PER_LOOP = ROWS <= 64 ? ROWS : (int)Mma_tile::M_PER_MMA_PER_CTA;
     // The number of outter loop for the stores.
     static constexpr int LOOPS = ROWS / ROWS_PER_LOOP;
 
-    // The number of "rows" stored per STG.
-    static constexpr int ROWS_PER_STG = Cta_tile::THREADS_PER_CTA / THREADS_PER_ROW;
+    // The number of "rows" load per load.
+    static constexpr int ROWS_PER_LDG = Cta_tile::THREADS_PER_CTA / THREADS_PER_ROW;
     // Do we have to guard against partial writes/reads.
-    static constexpr bool HAS_INCOMPLETE_STG = Cta_tile::M % ROWS_PER_STG != 0;
-    // The number of STGs needed to store a chunk of the Q matrix.
-    static constexpr int STGS_PER_LOOP = DivUpConstexpr(ROWS_PER_LOOP, ROWS_PER_STG);
-    // The number of STGs needed to store a chunk of the Q matrix in total.
-    static constexpr int STGS = STGS_PER_LOOP * LOOPS;
+    static constexpr bool HAS_INCOMPLETE_STG = Cta_tile::M % ROWS_PER_LDG != 0;
+    // The number of LDGS needed to store a chunk of the Q matrix.
+    static constexpr int LDGS_PER_LOOP = DivUpConstexpr(ROWS_PER_LOOP, ROWS_PER_LDG);
+    // The number of LDGS needed to store a chunk of the Q matrix in total.
+    static constexpr int LDGS = LDGS_PER_LOOP * LOOPS;
 
     // Ctor.
     template<typename Params, typename BInfo>
     inline __device__ Gmem_tile_mask(const Params &params, const BInfo &binfo, const int tidx)
-        : row_stride_in_bytes(params.seqlen_q * BYTES_PER_ELEMENT)
+        : row_stride_in_bytes(binfo.actual_seqlen_k * BYTES_PER_ELEMENT)
         , actual_seqlen_q(binfo.actual_seqlen_q)
+        , actual_seqlen_k(binfo.actual_seqlen_k)
         , tidx_(tidx) {
         
         int bidb = binfo.bidb; // batch id
         // for bid offset, cause the input dim is [1, mWins, 1, N, N]
         // mWins the numbers of windows, N is the seq len
         // the dim of q*kt is  [B / mWins, mWins, num, N, N]
-        int bidb_offset = bidb / params.attn_mask_batch; 
+
+        int bidb_offset = bidb % params.attn_mask_batch; 
         ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr) + 
-                bidb_offset * COLS * ROWS * BYTES_PER_ELEMENT;
+                bidb_offset * binfo.actual_seqlen_q * binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
 
         // Compute the position in the sequence (within the CTA for the moment).
         int row = tidx / THREADS_PER_ROW;
@@ -344,57 +346,30 @@ struct Gmem_tile_mask {
 
         // The row offset in the batched GEMM.
         // int64_t row_offset = (int64_t)row * row_stride_in_bytes + binfo.bidx * BYTES_PER_ROW;
-        uint32_t row_offset = (uint32_t)((binfo.sum_s_q + row) * row_stride_in_bytes);
+        uint32_t row_offset = (uint32_t)(row * row_stride_in_bytes);
         // Assemble the final pointer.
-        ptr_ += row_offset + col * BYTES_PER_STG;
-
-        // Is that thread active on the last STG?
-        if( HAS_INCOMPLETE_STG ) {
-            is_active_for_last_stg_ = row + (STGS - 1) * ROWS_PER_STG < Cta_tile::M;
-        }
+        ptr_ += row_offset + col * BYTES_PER_LDG;
     }
 
-    // Store data to global memory.
-    inline __device__ void store(const uint4 (&src)[STGS_PER_LOOP], int mi) {
+    inline __device__ void load() {
         int row_ = tidx_ / THREADS_PER_ROW;
+        int col = tidx_ % THREADS_PER_ROW;
+        const void *ptrs[LDGS];
+        uint32_t preds[LDGS];
         #pragma unroll
-        for( int ii = 0; ii < STGS_PER_LOOP; ++ii ) {
-            int jj = mi * STGS_PER_LOOP + ii;
-            if( row_ + jj * ROWS_PER_STG >= this->actual_seqlen_q ) {
-                break;
-            }
-
-            if (BYTES_PER_ELEMENT == 4) {
-                if( !HAS_INCOMPLETE_STG || (jj < STGS - 1 || this->is_active_for_last_stg_) ) {
-                    fmha::stg(this->ptr_ + jj * ROWS_PER_STG * this->row_stride_in_bytes, src[ii]);
-                }
-            } else if (BYTES_PER_ELEMENT == 2) {
-                float x = reinterpret_cast<const float &>(src[ii].x);
-                float y = reinterpret_cast<const float &>(src[ii].y);
-                float z = reinterpret_cast<const float &>(src[ii].z);
-                float w = reinterpret_cast<const float &>(src[ii].w);
-                uint2 out = float4_to_half4(x, y, z, w);
-                if( !HAS_INCOMPLETE_STG || (jj < STGS - 1 || this->is_active_for_last_stg_) ) {
-                    fmha::stg(this->ptr_ + jj * ROWS_PER_STG * this->row_stride_in_bytes, out);
-                }
-            }
+        printf("ptr_ = %p\n", ptr_);
+        for( int ii = 0; ii < LDGS; ++ii ) {
+            ptrs[ii] = ptr_ + (uint32_t)ii * ROWS_PER_LDG * row_stride_in_bytes;
+            printf("ptrs[ii] = %p\n", ptrs[ii]);
+            preds[ii] = ((row_ + ii * ROWS_PER_LDG) < min(ROWS, actual_seqlen_q) && col < min(COLS, actual_seqlen_k));
+            fetch_[ii] = make_uint4(0, 0, 0, 0);
         }
-    }
 
-    // Store data to global memory.
-    inline __device__ void load(uint4 (&dst)[STGS_PER_LOOP], int mi) {
-        static_assert(BYTES_PER_ELEMENT == 4);
-        int row_ = tidx_ / THREADS_PER_ROW;
+        // not packing predicates removes restrictions (e.g. FP16 384, 4 warps)
+        Ldg_functor<uint4, LDGS> fct(fetch_, ptrs);
         #pragma unroll
-        for( int ii = 0; ii < STGS_PER_LOOP; ++ii ) {
-            int jj = mi * STGS_PER_LOOP + ii;
-            if( row_ + jj * ROWS_PER_STG >= this->actual_seqlen_q ) {
-                break;
-            }
-
-            if( !HAS_INCOMPLETE_STG || (jj < STGS - 1 || this->is_active_for_last_stg_) ) {
-                fmha::ldg(dst[ii], this->ptr_ + jj * ROWS_PER_STG * this->row_stride_in_bytes);
-            }
+        for( int ii = 0; ii < LDGS; ++ii ) {
+            fct.load(ii, preds[ii]);
         }
     }
 
@@ -405,14 +380,14 @@ struct Gmem_tile_mask {
         this->actual_seqlen_q -= ROWS * steps;
     }
 
+    uint4 fetch_[LDGS];
     // The stride between rows for the attn mask.
     // int64_t row_stride_in_bytes;
     const uint32_t row_stride_in_bytes;
     // The pointer.
     char *ptr_;
-    // Is the thread active for the last STG?
-    int is_active_for_last_stg_;
     int actual_seqlen_q;
+    int actual_seqlen_k;
     // const Gmem_tile tile_;
     const int tidx_;
 };

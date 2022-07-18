@@ -91,9 +91,9 @@ struct AttnMask {
     using Mma_tile = fmha::Hmma_tile<Cta_tile>;
 
     template<typename BInfo>
-    __device__ AttnMask(const BInfo &binfo, const Gmem_tile &tile, int tidx, const int loop_step_idx_ = 0)
+    __device__ AttnMask(const BInfo &binfo, const Gmem_tile *tile, int tidx, const int loop_step_idx_ = 0)
         : actual_seqlen_k(binfo.actual_seqlen_k - loop_step_idx_ * Cta_tile::N)
-        , loop_step_idx(loop_step_idx_) {
+        , loop_step_idx(loop_step_idx_), mask_tile(const_cast<Gmem_tile *>(tile)) {
 
         const int warp = tidx / Cta_tile::THREADS_PER_WARP;
         const int lane = tidx % Cta_tile::THREADS_PER_WARP;
@@ -112,20 +112,45 @@ struct AttnMask {
 
     inline __device__ bool is_valid(const int mi, const int ni, const int ii, const int jj) const {
 
-        // ii and jj iterate over the 2x4 fragment
-        // const int current_col = (Is_causal ? loop_step_idx * Cta_tile::N : 0) + ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
-        const int current_col = ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
-        const int current_row = row_offset + ii * 8;
-        const bool col_valid = current_col < actual_seqlen_k;
-        // const bool col_valid = (ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1)) < actual_seqlen_k;
-        //&& (row + mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8) < actual_seqlen_k;
-        // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
-        //     printf("current_col=%d, current_row=%d, actual_seqlen_k=%d, col_valid=%d, all_valid=%d\n", current_col, current_row, actual_seqlen_k, col_valid, all_valid);
-        // }
-        // printf("Is_causal = %d, col_valid = %d, current_col = %d, current_row = %d, loop_step_idx = %d\n",
-        //             Is_causal, col_valid, current_col, current_row, loop_step_idx);
-        return Is_causal ? col_valid && (current_col + loop_step_idx * Cta_tile::N <= current_row) : col_valid;
-        // return row_valid && col_valid;
+        // // ii and jj iterate over the 2x4 fragment
+        // // const int current_col = (Is_causal ? loop_step_idx * Cta_tile::N : 0) + ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
+        // const int current_col = ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
+        // const int current_row = row_offset + ii * 8;
+        // const bool col_valid = current_col < actual_seqlen_k;
+        // // const bool col_valid = (ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1)) < actual_seqlen_k;
+        // //&& (row + mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8) < actual_seqlen_k;
+        // // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0)) {
+        // //     printf("current_col=%d, current_row=%d, actual_seqlen_k=%d, col_valid=%d, all_valid=%d\n", current_col, current_row, actual_seqlen_k, col_valid, all_valid);
+        // // }
+        // // printf("Is_causal = %d, col_valid = %d, current_col = %d, current_row = %d, loop_step_idx = %d\n",
+        // //             Is_causal, col_valid, current_col, current_row, loop_step_idx);
+        // // return Is_causal ? col_valid && (current_col + loop_step_idx * Cta_tile::N <= current_row) : col_valid;
+
+        int uint4_offset = mi * 2 + ni;
+#ifdef DEBUG_USING_CU
+        printf("mi = %d, ni = %d, ii = %d, jj = %d, LDGS = %d, uint4_offset = %d\n",  
+            mi, ni, ii, jj, mask_tile->LDGS, uint4_offset);
+#endif
+        if (mi != 0 || ni > 1) {
+            return false;
+        }
+        printf(" mask_tile->fetch_ = %p \n", &mask_tile->fetch_);
+        uint4 data = mask_tile->fetch_[uint4_offset];
+        printf ("data.x = %d \n", data.x);
+        printf ("data.y = %d \n", data.y);
+        printf ("data.z = %d \n", data.z);
+        printf ("data.w = %d \n", data.w);
+        // cutlass::half_t value = *(reinterpret_cast<cutlass::int*>(&mask_tile->fetch_[mi * 2 + ni]));
+        // cutlass::half_t value = *(reinterpret_cast<cutlass::half_t*>(&mask_tile->fetch_[mi * 2 + ni]) + ii * 4 + jj);
+        bool valid = true;
+        // valid = float(value) > 0.0f;
+
+// #ifdef DEBUG_USING_CU
+//         printf("mi = %d, ni = %d, ii = %d, jj = %d, value = %f, valid = %d, LDGS = %d\n",
+//                 mi, ni, ii, jj, float(value), valid, mask_tile->LDGS);
+// #endif
+
+        return valid;
     }
 
     //BERT Mask: if upper left is invalid, none are valid
@@ -135,6 +160,10 @@ struct AttnMask {
 
     inline __device__ void load(const int it) {
         row_offset = it * Cta_tile::M + row;
+        if (mask_tile != nullptr) {
+            mask_tile->load();
+            mask_tile->move();
+        }
     }
     int row_offset;
 
@@ -142,6 +171,7 @@ struct AttnMask {
     int col;
     const int loop_step_idx;
     const int actual_seqlen_k;
+    Gmem_tile * mask_tile = nullptr;
 };
 
 

@@ -36,6 +36,7 @@ __global__ void fmha_fprop_fp16_sm80_loop_kernel(FMHA_fprop_params params) {
 template<typename Kernel_traits>
 void run_fmha_fp16_sm80_loop_(Launch_params<FMHA_fprop_params> &launch_params,
                             const bool configure) {
+    FMHA_CHECK_CUDA(cudaPeekAtLastError());
     bool is_causal = launch_params.params.is_causal;
     // TD [2022-04-27]: This case work is pretty ugly, maybe there's a better way?
     auto kernel = launch_params.is_dropout
@@ -57,6 +58,7 @@ void run_fmha_fp16_sm80_loop_(Launch_params<FMHA_fprop_params> &launch_params,
         FMHA_CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
     }
 
+    FMHA_CHECK_CUDA(cudaPeekAtLastError());
     if (configure) {
         using Mma_tile_p = fmha::Hmma_tile<typename Kernel_traits::Cta_tile_p>;
         constexpr int M = Kernel_traits::Cta_tile_p::M;
@@ -68,6 +70,7 @@ void run_fmha_fp16_sm80_loop_(Launch_params<FMHA_fprop_params> &launch_params,
         return;
     }
 
+    FMHA_CHECK_CUDA(cudaPeekAtLastError());
     dim3 grid(launch_params.params.b, launch_params.params.h);
     kernel<<<grid, Kernel_traits::THREADS, smem_size, launch_params.stream>>>(
         launch_params.params);
