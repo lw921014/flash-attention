@@ -19,4 +19,4 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
         const bool is_causal,
         const bool return_softmax,
         c10::optional<at::Generator> gen_,
-        const at::Tensor &attn_mask);
+        c10::optional<at::Tensor> attn_mask_op);

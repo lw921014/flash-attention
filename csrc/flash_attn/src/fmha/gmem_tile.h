@@ -330,34 +330,35 @@ struct __align__(32) Gmem_tile_mask  {
         , actual_seqlen_k(64)
         , tidx_(tidx) {
        
-	is_none = params.attn_mask_ptr == nullptr;
-	if (!is_none) { 
-        	int bidb = binfo.bidb; // batch id
-        	// for bid offset, cause the input dim is [1, mWins, 1, N, N]
-        	// mWins the numbers of windows, N is the seq len
-        	// the dim of q*kt is  [B / mWins, mWins, num, N, N]
+        is_none_ = params.attn_mask_ptr == nullptr;
+        if (!is_none_) { 
+                int bidb = binfo.bidb; // batch id
+                // for bid offset, cause the input dim is [1, mWins, 1, N, N]
+                // mWins the numbers of windows, N is the seq len
+                // the dim of q*kt is  [B / mWins, mWins, num, N, N]
 
-        	int bidb_offset = bidb % params.attn_mask_batch; 
-        	ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr) + 
-        	        bidb_offset * actual_seqlen_q * actual_seqlen_k * BYTES_PER_ELEMENT;
+                int bidb_offset = bidb % params.attn_mask_batch; 
+                ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr) + 
+                        bidb_offset * actual_seqlen_q * actual_seqlen_k * BYTES_PER_ELEMENT;
 
-        	// Compute the position in the sequence (within the CTA for the moment).
-        	int row = tidx / THREADS_PER_ROW;
-        	// Compute the position of the thread in the row.
-        	int col = tidx % THREADS_PER_ROW;
+                // Compute the position in the sequence (within the CTA for the moment).
+                int row = tidx / THREADS_PER_ROW;
+                // Compute the position of the thread in the row.
+                int col = tidx % THREADS_PER_ROW;
 
-        	// The row offset in the batched GEMM.
-        	// int64_t row_offset = (int64_t)row * row_stride_in_bytes + binfo.bidx * BYTES_PER_ROW;
-        	uint32_t row_offset = (uint32_t)(row * row_stride_in_bytes);
-        	// Assemble the final pointer.
-        	ptr_ += row_offset + col * BYTES_PER_LDG;
-	}
+                // The row offset in the batched GEMM.
+                // int64_t row_offset = (int64_t)row * row_stride_in_bytes + binfo.bidx * BYTES_PER_ROW;
+                uint32_t row_offset = (uint32_t)(row * row_stride_in_bytes);
+                // Assemble the final pointer.
+                ptr_ += row_offset + col * BYTES_PER_LDG;
+        }
     }
     inline __device__ bool is_none() {
-	return is_none;    
+        return is_none_;    
     }	
     inline __device__ void load() {
-	if (is_none) { return;}
+        if (is_none_) { return;}
+
         int row_ = tidx_ / THREADS_PER_ROW;
         int col = tidx_ % THREADS_PER_ROW;
         const void *ptrs[LDGS];
@@ -378,7 +379,7 @@ struct __align__(32) Gmem_tile_mask  {
     }
 
     inline __device__ void move(const int steps = 1) {
-	if (is_none) {return ;}
+        if (is_none_) {return ;}
         // row_ += ROWS * steps;
         // ptr_ += (int64_t)ROWS * row_stride_in_bytes * steps;
         ptr_ += (uint32_t)ROWS * row_stride_in_bytes * steps;
@@ -394,8 +395,8 @@ struct __align__(32) Gmem_tile_mask  {
     int actual_seqlen_q;
     int actual_seqlen_k;
     // const Gmem_tile tile_;
-    const int tidx_
-    bool is_none = false; // processs when atten_mask is None
+    const int tidx_;
+    bool is_none_; // processs when atten_mask is None
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

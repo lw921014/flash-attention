@@ -112,6 +112,14 @@ class FlashMHA(nn.Module):
             qkv = torch.stack([query, key, value], dim=2)
         else:
             qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.num_heads)
+
+        # NOTE: add some hard code for quick test in Swin-T, need to fix it in the future
+        # forcely padding mask seq_q and seq_k to 64, keep other dim the same
+        if attn_mask is not None:
+            # print(attn_mask.size())
+            attn_mask = F.pad(attn_mask, (0, 15, 0, 15), mode='constant', value=0)
+            # print(attn_mask.size())
+            
         context = self.inner_attn(qkv, attn_mask=attn_mask, key_padding_mask=key_padding_mask,
                                                 need_weights=need_weights, causal=self.causal)
         return self.out_proj(rearrange(context, 'b s h d -> b s (h d)'))

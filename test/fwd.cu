@@ -32,6 +32,7 @@ void test_fwd() {
     auto cu_seqlens_k = cu_seqlens_k_cpu.cuda();
     at::Tensor attn_mask = at::ones({mWins, max_seqlen_q_, max_seqlen_k_}, at::kHalf).triu().cuda();
     c10::optional<at::Generator> gen_;
+    c10::optional<at::Tensor> attn_mask_op;
     std::vector<at::Tensor> ret = mha_fwd(
             q,         // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
             k,         // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
@@ -46,7 +47,7 @@ void test_fwd() {
             is_causal,
             return_softmax,
             gen_,
-            attn_mask);
+            attn_mask_op);
     LOG(INFO) << "Ret vec size is " << ret.size();
     for (int i = 0; i < ret.size(); i ++) {
         ret[i].cpu();
