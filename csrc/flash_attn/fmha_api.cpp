@@ -30,6 +30,9 @@
 #include <ATen/cuda/CUDAContext.h>
 
 #include "fmha.h"
+#ifdef DEBUG_USING_CU
+#include <fmha_api.h>
+#endif
 
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 
@@ -713,7 +716,7 @@ mha_bwd_block(const at::Tensor &dout,  // total x num_heads, x head_size
     return { dq, dk, dv, softmax_d };
 }
 
-
+#ifndef DEBUG_USING_CU
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "Fused Multi-head Self-attention";
     m.def("fwd", &mha_fwd, "Forward pass");
@@ -721,3 +724,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("fwd_block", &mha_fwd_block, "Forward pass (blocksparse)");
     m.def("bwd_block", &mha_bwd_block, "Backward pass (blocksparse)");
 }
+#endif
