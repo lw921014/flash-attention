@@ -1,7 +1,7 @@
 /******************************************************************************
  * Copyright (c) 2022, Tri Dao.
  * Copyright (c) 2011-2021, NVIDIA CORPORATION.  All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  *     * Redistributions of source code must retain the above copyright
@@ -12,7 +12,7 @@
  *     * Neither the name of the NVIDIA CORPORATION nor the
  *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -30,12 +30,12 @@
 #include <ATen/cuda/CUDAContext.h>
 
 #include "fmha.h"
-#ifdef DEBUG_USING_CU
-#include <fmha_api.h>
+
+#if defined(DEBUG_USING_CU) && !defined(FOR_PYBIND) 
+#include "fmha_api.h"
 #endif
 
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == torch::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
-
 
 void set_params_fprop(FMHA_fprop_params &params,
                       // sizes
@@ -57,7 +57,6 @@ void set_params_fprop(FMHA_fprop_params &params,
                       float p_dropout,
                       float softmax_scale,
                       bool is_causal) {
-
     Data_type acc_type = DATA_TYPE_FP32;
     Data_type data_type = DATA_TYPE_FP16;
 
@@ -117,6 +116,52 @@ void set_params_fprop(FMHA_fprop_params &params,
     params.is_causal = is_causal;
 }
 
+void set_params_fprop_with_mask_and_bias(FMHA_fprop_params &params,
+                      // sizes
+                      const size_t b,
+                      const size_t seqlen_q,
+                      const size_t seqlen_k,
+                      const size_t h,
+                      const size_t d,
+                      // device pointers
+                      const at::Tensor &q,
+                      const at::Tensor &k,
+                      const at::Tensor &v,
+                      const at::Tensor &bias,
+                      void *cu_seqlens_q_d,
+                      void *cu_seqlens_k_d,
+                      void *o_packed_d,
+                      void *o_tmp_d,
+                      void *s_d,
+                      void *softmax_lse_d,
+                      float p_dropout,
+                      float softmax_scale,
+                      bool is_causal,
+                      void*  attn_mask_ptr,
+		      int attn_mask_batch) {
+    set_params_fprop(params,
+                     b,
+                     seqlen_q,
+                     seqlen_k,
+                     h,
+                     d,
+                     q,
+                     k,
+                     v,
+                     cu_seqlens_q_d,
+                     cu_seqlens_k_d,
+                     o_packed_d,
+                     o_tmp_d,
+                     s_d,
+                     softmax_lse_d,
+                     p_dropout,
+                     softmax_scale,
+                     is_causal);
+    params.pos_bias_ptr = bias.data_ptr();
+    params.attn_mask_ptr = attn_mask_ptr;
+    params.attn_mask_batch = attn_mask_batch; // window_count for WindowAttention
+}
+
 void set_params_dgrad(FMHA_dgrad_params &params,
                       // sizes
                       const size_t b,
@@ -171,10 +216,68 @@ void set_params_dgrad(FMHA_dgrad_params &params,
     params.dsoftmax_sum = dsoftmax_sum_d;
 }
 
+void set_params_dgrad_with_mask_and_bias(FMHA_dgrad_params &params,
+                      // sizes
+                      const size_t b,
+                      const size_t seqlen_q,
+                      const size_t seqlen_k,
+                      const size_t h,
+                      const size_t d,
+                      // device pointers
+                      const at::Tensor q,
+                      const at::Tensor k,
+                      const at::Tensor v,
+                      at::Tensor dq,
+                      at::Tensor dk,
+                      at::Tensor dv,
+                      at::Tensor dpos_bias,
+                      void *cu_seqlens_q_d,
+                      void *cu_seqlens_k_d,
+                      void *o_packed_d,
+                      void *dq_tmp_d,
+                      void *do_packed_d,
+                      void *softmax_lse_d,
+                      void *dsoftmax_sum_d,
+                      float p_dropout,
+                      float softmax_scale,
+                      bool is_causal,
+                      void*  attn_mask_ptr,
+                      int attn_mask_batch) {
+
+    set_params_dgrad(params,
+                    // sizes
+                    b,
+                    seqlen_q,
+                    seqlen_k,
+                    h,
+                    d,
+                        // device pointers
+                    q,
+                    k,
+                    v,
+                    dq,
+                    dk,
+                    dv,
+                    cu_seqlens_q_d,
+                    cu_seqlens_k_d,
+                    o_packed_d,
+                    dq_tmp_d,
+                    do_packed_d,
+                    softmax_lse_d,
+                    dsoftmax_sum_d,
+                    p_dropout,
+                    softmax_scale,
+                    is_causal);
+    params.dpos_bias_ptr = dpos_bias.data_ptr();
+    params.attn_mask_ptr = attn_mask_ptr;
+    params.attn_mask_batch = attn_mask_batch; // window_count for WindowAttention
+}
+
 std::vector<at::Tensor>
 mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
         const at::Tensor &k,         // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         const at::Tensor &v,         // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
+        const at::Tensor &pos_bias,
         const at::Tensor &cu_seqlens_q,  // b+1
         const at::Tensor &cu_seqlens_k,  // b+1
         const int max_seqlen_q_,
@@ -184,7 +287,43 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
         const bool zero_tensors,
         const bool is_causal,
         const bool return_softmax,
-        c10::optional<at::Generator> gen_) {
+        c10::optional<at::Generator> gen_,
+        c10::optional<at::Tensor> attn_mask) {
+
+#ifdef DEBUG_USING_CU
+    std::cout << __FILE__ << ":" <<__LINE__ << " - "
+        << ", q.size " << q.sizes()
+        << ", k.size " << k.sizes()
+        << ", v.size " << v.sizes()
+        << ", pos_bias.size " << pos_bias.sizes()
+        << ", cu_seqlens_q.size " << cu_seqlens_q.sizes()
+        << ", cu_seqlens_k.size " << cu_seqlens_k.sizes()
+        << ", max_seqlen_q_ = " << max_seqlen_q_
+        << ", max_seqlen_k_ = " << max_seqlen_k_
+        << ", p_dropout = " << p_dropout
+        << ", softmax_scale = " << softmax_scale
+        << ", zero_tensors = " << int(zero_tensors)
+        << ", is_causal = " << int(is_causal)
+        << ", return_softmax = " << int(return_softmax);
+    if (attn_mask.has_value()){
+        std::cout << ", attn_mask.size = " << attn_mask.value().sizes();
+    }
+    std::cout << std::endl;
+
+    std::cout << __FILE__ << ":" <<__LINE__ << " - "
+              << "q addr = " << q.data_ptr() << ", "
+              << "k addr = " << k.data_ptr() << ", "
+              << "v addr = " << v.data_ptr() << ", "
+              << "pos_bias addr = " << pos_bias.data_ptr() << ", "
+              << "cu_seqlens_q addr = " << cu_seqlens_q.data_ptr() << ", "
+              << "cu_seqlens_k addr = " << cu_seqlens_k.data_ptr() << ", ";
+    if (attn_mask.has_value()){
+        std::cout << "attn_mask addr = " << attn_mask.value().data_ptr();
+    }
+    std::cout << std::endl;
+#endif
+
+    FMHA_CHECK_CUDA(cudaPeekAtLastError());
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
     bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
@@ -198,21 +337,30 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
     TORCH_CHECK(q.dtype() == torch::kFloat16);
     TORCH_CHECK(k.dtype() == torch::kFloat16);
     TORCH_CHECK(v.dtype() == torch::kFloat16);
+    TORCH_CHECK(pos_bias.dtype() == torch::kFloat16);
     TORCH_CHECK(cu_seqlens_q.dtype() == torch::kInt32);
     TORCH_CHECK(cu_seqlens_k.dtype() == torch::kInt32);
 
     TORCH_CHECK(q.is_cuda());
     TORCH_CHECK(k.is_cuda());
     TORCH_CHECK(v.is_cuda());
+    TORCH_CHECK(pos_bias.is_cuda());
     TORCH_CHECK(cu_seqlens_q.is_cuda());
     TORCH_CHECK(cu_seqlens_k.is_cuda());
 
     TORCH_CHECK(q.stride(-1) == 1);
     TORCH_CHECK(k.stride(-1) == 1);
     TORCH_CHECK(v.stride(-1) == 1);
-    TORCH_CHECK(cu_seqlens_k.is_contiguous());
+    TORCH_CHECK(pos_bias.is_contiguous());
+    TORCH_CHECK(cu_seqlens_q.is_contiguous());
     TORCH_CHECK(cu_seqlens_k.is_contiguous());
 
+    if (attn_mask.has_value()) {
+        TORCH_CHECK(attn_mask.value().is_cuda());
+        TORCH_CHECK(attn_mask.value().dtype() == torch::kFloat16);
+        TORCH_CHECK(attn_mask.value().is_contiguous());
+        // CHECK_SHAPE(attn_mask.value(), total_k, num_heads, head_size);
+    }
     const auto sizes = q.sizes();
 
     const int batch_size = cu_seqlens_q.numel() - 1;
@@ -228,6 +376,8 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
     CHECK_SHAPE(v, total_k, num_heads, head_size);
     CHECK_SHAPE(cu_seqlens_q, batch_size + 1);
     CHECK_SHAPE(cu_seqlens_k, batch_size + 1);
+    // NOTE: now we only support 64 size
+    CHECK_SHAPE(pos_bias, num_heads, 64, 64);
 
     int blocksize_c = ((head_size == 128 && (is_dropout || !is_sm80)) || (is_sm75 && head_size == 64 && is_dropout)) ? 128 : 256;
     // Need to round max_seqlen_k to multiples of blocksize_c
@@ -262,13 +412,13 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
         gen_, at::cuda::detail::getDefaultCUDAGenerator());
 
-    set_params_fprop(launch_params.params,
+    set_params_fprop_with_mask_and_bias(launch_params.params,
                      batch_size,
                      max_seqlen_q,
                      max_seqlen_k,
                      num_heads,
                      head_size,
-                     q, k, v,
+                     q, k, v, pos_bias,
                      cu_seqlens_q.data_ptr(),
                      cu_seqlens_k.data_ptr(),
                      o.data_ptr(),
@@ -277,7 +427,9 @@ mha_fwd(const at::Tensor &q,         // total_q x num_heads x head_size, total_q
                      softmax_lse.data_ptr(),
                      p_dropout,
                      softmax_scale,
-                     is_causal);
+                     is_causal,
+                     attn_mask.has_value() ? attn_mask.value().data_ptr() : nullptr,
+		     attn_mask.has_value() ? attn_mask.value().sizes()[0] : 0);
 
     run_fmha_fp16_sm80(launch_params, /*configure=*/ true);
     // number of times random will be generated per thread, to offset philox counter in thc random
@@ -309,8 +461,10 @@ mha_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
         at::Tensor &dq,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
         at::Tensor &dk,   // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         at::Tensor &dv,   // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
+        const at::Tensor &dpos_bias,
         const at::Tensor &cu_seqlens_q,  // b+1
         const at::Tensor &cu_seqlens_k,  // b+1
+        c10::optional<at::Tensor> attn_mask,
         const int max_seqlen_q_,
         const int max_seqlen_k_,          // max sequence length to choose the kernel
         const float p_dropout,         // probability to drop
@@ -337,12 +491,14 @@ mha_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     TORCH_CHECK(dq.dtype() == torch::kFloat16);
     TORCH_CHECK(dk.dtype() == torch::kFloat16);
     TORCH_CHECK(dv.dtype() == torch::kFloat16);
+    TORCH_CHECK(dpos_bias.dtype() == torch::kFloat16);
     TORCH_CHECK(cu_seqlens_q.dtype() == torch::kInt32);
     TORCH_CHECK(cu_seqlens_k.dtype() == torch::kInt32);
 
     TORCH_CHECK(q.is_cuda());
     TORCH_CHECK(k.is_cuda());
     TORCH_CHECK(v.is_cuda());
+    TORCH_CHECK(dpos_bias.is_cuda());
     TORCH_CHECK(out.is_cuda());
     TORCH_CHECK(dout.is_cuda());
     TORCH_CHECK(softmax_lse_.is_cuda());
@@ -357,6 +513,7 @@ mha_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     TORCH_CHECK(dq.stride(-1) == 1);
     TORCH_CHECK(dk.stride(-1) == 1);
     TORCH_CHECK(dv.stride(-1) == 1);
+    TORCH_CHECK(dpos_bias.is_contiguous());
     TORCH_CHECK(cu_seqlens_q.is_contiguous());
     TORCH_CHECK(cu_seqlens_k.is_contiguous());
 
@@ -383,6 +540,14 @@ mha_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     CHECK_SHAPE(dv, total_k, num_heads, head_size);
     CHECK_SHAPE(cu_seqlens_q, batch_size + 1);
     CHECK_SHAPE(cu_seqlens_k, batch_size + 1);
+    CHECK_SHAPE(dpos_bias, batch_size, num_heads, 64, 64);
+
+    if (attn_mask.has_value()) {
+        TORCH_CHECK(attn_mask.value().is_cuda());
+        TORCH_CHECK(attn_mask.value().dtype() == torch::kFloat16);
+        TORCH_CHECK(attn_mask.value().is_contiguous());
+        // CHECK_SHAPE(attn_mask.value(), total_k, num_heads, head_size);
+    }
 
     int blocksize_c = (head_size == 128 || (is_sm75 && head_size == 64)) ? 128 : 256;
     int max_seqlen_k = ((max_seqlen_k_ + blocksize_c - 1) / blocksize_c) * blocksize_c;
@@ -411,14 +576,14 @@ mha_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
 
     FMHA_dgrad_params params;
 
-    set_params_dgrad(params,
+    set_params_dgrad_with_mask_and_bias(params,
                      batch_size,
                      max_seqlen_q,
                      max_seqlen_k,
                      num_heads,
                      head_size,
                      q, k, v,
-                     dq, dk, dv,
+                     dq, dk, dv, dpos_bias,
                      cu_seqlens_q.data_ptr(),
                      cu_seqlens_k.data_ptr(),
                      out.data_ptr(),
@@ -428,7 +593,9 @@ mha_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
                      softmax_d.data_ptr(),
                      p_dropout,
                      softmax_scale,
-                     is_causal);
+                     is_causal,
+                     attn_mask.has_value() ? attn_mask.value().data_ptr() : nullptr,
+		             attn_mask.has_value() ? attn_mask.value().sizes()[0] : 0);
 
     auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
         gen_, at::cuda::detail::getDefaultCUDAGenerator());
@@ -716,7 +883,7 @@ mha_bwd_block(const at::Tensor &dout,  // total x num_heads, x head_size
     return { dq, dk, dv, softmax_d };
 }
 
-#ifndef DEBUG_USING_CU
+#if defined(FOR_PYBIND) || !defined(DEBUG_USING_CU)
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "Fused Multi-head Self-attention";
     m.def("fwd", &mha_fwd, "Forward pass");

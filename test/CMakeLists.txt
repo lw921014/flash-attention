@@ -62,6 +62,9 @@ include_directories(/opt/conda/include/python3.8/)
 set(TORCH_LIB /opt/conda/lib/python3.8/site-packages/torch/lib/)
 
 # src
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+set(CMAKE_CUDA_ARCHITECTURES 80)
+endif(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 
 function(fmha_test TARGET_NAME)
     set(oneValueArgs "")
@@ -89,7 +92,7 @@ function(fmha_test TARGET_NAME)
                     ${TORCH_LIB}/libcaffe2_nvrtc.so
                     ${TORCH_LIB}/libbackend_with_compiler.so)
     target_link_libraries(${TARGET_NAME} ${COMMON_DEPS})
-endfunction(cc_test)
+endfunction(fmha_test)
 
 # fmha_test(flash_attn_demo SRCS fwd.cu)
 # fmha_test(flash_attn_sanity SRCS sanity_fwd.cu)

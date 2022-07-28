@@ -142,6 +142,7 @@ void test_core(
             q,         // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
             k,         // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
             v,         // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
+            pos_bias,
             cu_seqlens_q,  // b+1
             cu_seqlens_k,  // b+1
             max_seqlen_q,
@@ -151,7 +152,8 @@ void test_core(
             zero_tensors,
             is_causal,
             return_softmax,
-            gen_);
+            gen_,
+            attn_mask_op);
     dump_tensor("q", q);
     dump_tensor("k", k);
     dump_tensor("v", v);
