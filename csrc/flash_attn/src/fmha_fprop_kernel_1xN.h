@@ -235,6 +235,8 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
 
     using Softmax = fmha::Softmax<Cta_tile_p, Kernel_traits>;
 
+    using Gmem_tile_mask = typename Kernel_traits::Gmem_tile_mask;
+
     // Shared memory.
     extern __shared__ char smem_[];
 
@@ -270,8 +272,6 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
     //     printf("begin = %d, steps = %d\n", begin, steps);
     // }
 
-    fmha::Mask<Cta_tile_p, Is_causal> mask(binfo, tidx, loop_step_idx);
-
     // Allocate the global memory tile loader for K.
     Gmem_tile_k gmem_k(params.k_ptr, params.k_row_stride_in_elts, params.k_head_stride_in_elts, binfo, tidx, false);
     // Allocate the global memory tile loader for V.
@@ -284,6 +284,9 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
 
     // Allocate the shared memory tile loader for O. We use the same as K so be careful!!!
     Smem_tile_o smem_o(&smem_[Gemm1::SMEM_OFFSET_O], tidx);
+
+    Gmem_tile_mask gmem_mask(params, binfo, tidx);
+    fmha::AttnMask<Cta_tile_p, Gmem_tile_mask> mask(binfo, &gmem_mask, tidx, loop_step_idx);
 
     if (!Is_first) {
         gmem_k.move(loop_step_idx);
@@ -379,8 +382,44 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
         // Convert from the accumulator type to FP32 for Softmax.
         softmax.unpack_noscale(acc_p);
 
+#if defined(DEBUG_USING_CU) && defined(ENABLE_PRINT) 
+        if(is_block_0()) {
+            for (int i_m = 0; i_m < Mma_tile_p::MMAS_M * 2; i_m ++){
+                    printf("after_soft_max_unpack_noscale: loop_step_idx = %03d, l = %03d, threadIdx.x = %03d, threadIdx.y = %03d, i_m = %01d, ele(0) = %f, accp ele(1) = %f, ele(2) = %f, ele(3) = %f, ele(4) = %f, ele(5) = %f, ele(6) = %f, ele(7) = %f \n",
+                                loop_step_idx, l, threadIdx.x, threadIdx.y, i_m,
+                                softmax.elt_[i_m][0],
+                                softmax.elt_[i_m][1],
+                                softmax.elt_[i_m][2],
+                                softmax.elt_[i_m][3],
+                                softmax.elt_[i_m][4],
+                                softmax.elt_[i_m][5],
+                                softmax.elt_[i_m][6],
+                                softmax.elt_[i_m][7]
+                    );
+            }
+        }
+#endif
+
         // Apply the mask.
         softmax.apply_mask(mask);
+
+#if defined(DEBUG_USING_CU) && defined(ENABLE_PRINT) 
+        if(is_block_0()) {
+            for (int i_m = 0; i_m < Mma_tile_p::MMAS_M * 2; i_m ++){
+                    printf("after_mask: loop_step_idx = %03d, l = %03d, threadIdx.x = %03d, threadIdx.y = %03d, i_m = %01d, ele(0) = %f, accp ele(1) = %f, ele(2) = %f, ele(3) = %f, ele(4) = %f, ele(5) = %f, ele(6) = %f, ele(7) = %f \n",
+                                loop_step_idx, l, threadIdx.x, threadIdx.y, i_m,
+                                softmax.elt_[i_m][0],
+                                softmax.elt_[i_m][1],
+                                softmax.elt_[i_m][2],
+                                softmax.elt_[i_m][3],
+                                softmax.elt_[i_m][4],
+                                softmax.elt_[i_m][5],
+                                softmax.elt_[i_m][6],
+                                softmax.elt_[i_m][7]
+                    );
+            }
+        }
+#endif
 
         if( Kernel_traits::SHARE_SMEM_FOR_K_AND_V && l == 0 ) {
             // if we share K and V, it could be that V was not fully read yet but we write into smem for reduction

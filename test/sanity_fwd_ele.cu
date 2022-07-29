@@ -237,3 +237,31 @@ TEST(FWDTest, WithoutMask) {
         cu_seqlens_k
     );
 }
+
+TEST(FWDTest, WithMask) {
+    std::vector<int> qkv_shape = {49, 1, 32};
+    int cu_seqlens_qk = 2;
+    int max_seqlen_qk = 49;
+    int window_size = static_cast<int>(std::sqrt(max_seqlen_qk));
+
+    at::Tensor q = at::rand({qkv_shape[0], qkv_shape[1], qkv_shape[2]}, at::kHalf).cuda();
+    at::Tensor k = at::rand({qkv_shape[0], qkv_shape[1], qkv_shape[2]}, at::kHalf).cuda();
+    at::Tensor v = at::rand({qkv_shape[0], qkv_shape[1], qkv_shape[2]}, at::kHalf).cuda();
+
+    auto cu_seqlens_q = get_cu_seqlens_qk(cu_seqlens_qk, window_size);
+    auto cu_seqlens_k = get_cu_seqlens_qk(cu_seqlens_qk, window_size);
+
+    auto attn_mask = at::empty({4, 64, 64}, at::kHalf).cuda();
+
+    at::Tensor pos_bias = at::zeros({qkv_shape[1], 64, 64}, at::kHalf).cuda();
+
+    test_core(
+        q,
+        k,
+        v,
+        attn_mask,
+        pos_bias,
+        cu_seqlens_q,
+        cu_seqlens_k
+    );
+}

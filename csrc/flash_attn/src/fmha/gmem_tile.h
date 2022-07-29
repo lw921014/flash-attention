@@ -549,5 +549,329 @@ struct Gmem_summary_stats {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+template<
+    typename Cta_tile,
+    int BYTES_PER_ELEMENT = 2
+>
+struct __align__(32) Gmem_tile_mask  {
+    // Mask shape: [1, mWins, 1, seqlen, seqlen]
+
+    static_assert(BYTES_PER_ELEMENT == 2);
+
+    // The mma tile.
+    using Mma_tile = fmha::Hmma_tile<Cta_tile>;
+    using StoreType = uint32_t;
+    using Fragment = typename fmha::Fragment<cutlass::half_t, 8>;
+
+    // The size of each element.
+    // static constexpr int BYTES_PER_ELEMENT = 2;
+    // The size of each LDG.
+    static constexpr int BYTES_PER_LDG = BYTES_PER_ELEMENT * 2;
+    static_assert(BYTES_PER_LDG == sizeof(StoreType));
+
+    static constexpr int ROWS = Cta_tile::M;
+    static constexpr int COLS = Cta_tile::N;
+
+    static constexpr int LDGS_PER_LOOP = 1; // no meaning in this version
+
+    // The number of LDGS needed to store a chunk of the P matrix in total.
+    static constexpr int LDGS_PER_THREAD_PER_WARP = 4;
+    static_assert(LDGS_PER_THREAD_PER_WARP == Fragment::Base::NUM_REGS);
+
+
+    static constexpr int THREADS_PER_QUAD = 4;   // 4
+    static constexpr int QUADS_PER_WARP = Cta_tile::THREADS_PER_WARP / THREADS_PER_QUAD;   // 32 / 4
+    static_assert(THREADS_PER_QUAD == 4);
+    static_assert(QUADS_PER_WARP == 8);
+
+    // Ctor.
+    // TODO(liuwei88): here we padding the mask input as 64 align, need to check it in the future
+    template<typename Params, typename BInfo>
+    inline __device__ Gmem_tile_mask(const Params &params, const BInfo &binfo, const int tidx)
+        : row_stride_in_bytes(64 * BYTES_PER_ELEMENT)
+        , actual_seqlen_q(binfo.actual_seqlen_q)
+        , actual_seqlen_k(binfo.actual_seqlen_k)
+        , tidx_(tidx) {
+
+        const int warp = tidx / Cta_tile::THREADS_PER_WARP;
+        const int lane = tidx % Cta_tile::THREADS_PER_WARP;
+
+        // static_assert(Cta_tile::WARPS_K == 1, "");
+
+        // find the warp in the Cta tile
+        const int warp_n = (warp / Cta_tile::WARPS_M);
+        const int warp_m = (warp % Cta_tile::WARPS_M);
+        
+        // decompose warp into 8x4 tile
+        const int quad = lane / 4;
+        const int tid = (lane % 4) * 2;
+
+        row = warp_m * Mma_tile::M_PER_MMA + quad;
+        static_assert(Mma_tile::M_PER_MMA == 16, 
+                "only support sm80 m16n8k16 tensor core");
+
+        col = warp_n * Mma_tile::N_PER_MMA + tid;
+        static_assert(Mma_tile::N_PER_MMA == 16, 
+                "only support sm80 m16n8k16 tensor core");
+
+        is_none_ = params.attn_mask_ptr == nullptr;
+        if (!is_none_) { 
+            int bidb = binfo.bidb; // batch id
+            // for bid offset, cause the input dim is [1, mWins, 1, N, N]
+            // mWins the numbers of windows, N is the seq len
+            // the dim of q*kt is  [B / mWins, mWins, num, N, N]
+            uint64_t bidb_offset = bidb % params.attn_mask_batch; 
+            ptr_ = reinterpret_cast<char *>(params.attn_mask_ptr) + 
+                    (uint64_t)bidb_offset * 64 * 64 * BYTES_PER_ELEMENT;
+
+            // The row offset in the batched GEMM.
+            uint64_t row_offset = (uint64_t)(row * row_stride_in_bytes);
+            // Assemble the final pointer.
+            ptr_ += row_offset + col * BYTES_PER_ELEMENT;
+        }
+#ifdef DEBUG_USING_CU
+    ldx = 0;
+#endif
+    }
+    
+    inline __device__ bool is_none() {
+        return is_none_;    
+    }
+
+    inline __device__ void load() {
+        if (is_none_) { return;}
+
+        // 
+        // mi, ni, ii, jj
+        // 
+        // gmem is short for global memory, the layout of each matrix'gmem is much complicated,
+        // especially when combined with softmax operation with mma operation due to following reason
+        // for mma operation, we need to know the difference between origin mma and that in our case 
+        // 
+        // origin mma(for tensor core m16n8k16), after a mma instruction each thread will compute four
+        // ele, the thread map for output matrix is shown as following: 
+        //       0       1       2       3       4       5       6       7
+        // 0    T0       T0      T1      T1      T2      T2     T3       T3         [quad 0]
+        // 1    T4       T4      T5      T5      T6      T6     T7       T7         [quad 1]
+        // 2                                                                        [quad 2]
+        // 3                                                                        [quad 3]
+        // 4                                                                        [quad 4]
+        // 5                                                                        [quad 5]
+        // 6                                                                        [quad 6]
+        // 7    T28      T28     T29     T29     T30     T30    T31      T31        [quad 7]
+        // 8    T0       T0      T1      T1      T2      T2     T3       T3         [quad 0]
+        // 9    T4       T4      T5      T5      T6      T6     T7       T7         [quad 1]
+        // 10                                                                       [quad 2]
+        // 11                                                                       [quad 3]
+        // 12                                                                       [quad 4]
+        // 13                                                                       [quad 5]
+        // 15                                                                       [quad 6]
+        // 15    T28      T28     T29     T29     T30     T30    T31      T31       [quad 7]
+        // 
+        // standard mma
+        // when using mma, each thread will hold a vector of register to save the results of mma,
+        // for example, thread 0 will get [0,0], [0,1], [8,0], [8,1] in its vector, here, we must
+        // note that, the register vector is sequencial, however, its ele located in diferent row
+        // in logical, knowing this is much important.
+        // 
+        // mma in our case
+        // in our case, mma is a wrapper of the mentioned standard mma, each warp will compute a final
+        // 16 x 32 tile using the standard mma, that means each warp will call four time mma instruction,
+        // but how each mma ins layout and how the result will be hold in each thread?
+        // mma ins layout: each warp will launch two mma ins sequencially within the inner loop and 
+        //                 will call such two mmas twice in the outer loop
+        //                 for inner loop, the result is not cross warp, for outer loop, the result is across warp
+        // 
+        // ------------------out loop1-----------------------------      ------------------out loop2-----------------------------
+        // inner mmas
+        // ---8 ele ---   ---8 ele ---   ---8 ele ---   ---8 ele ---    ---8 ele ---   ---8 ele ---   ---8 ele ---   ---8 ele ---
+        // standard mma
+        // 4 ele  4 ele   4 ele  4 ele   4 ele  4 ele   4 ele  4 ele    4 ele  4 ele   4 ele  4 ele   4 ele  4 ele   4 ele  4 ele
+        // warp0, warp0   warp1, warp1   warp2, warp2   warp3, warp3    warp0, warp0   warp1, warp1   warp2, warp2   warp3, warp3   
+        // result layout: each thread will hold 16 ele
+        // 
+        // result layout
+        // 
+        // each thread hold a 1 x 2 fragment, each fragment hold 8 reg, for thread 0 in warp 0, layout is shown as following
+        // fragment 0                                   fragment 1
+        // 0_0, 0_1, 8_0, 8_1, 0_8, 0_9, 8_8, 8_9       0_64, 0_65, 8_64, 8_65, 0_72, 0_73, 8_72, 8_73
+        // 
+        // here, we can introduce what mi, ni, ii, jj means
+        // 
+        // mi     : in M dimension, we call M mma, in our case, M = 1, so mi = [0]
+        // ni     : in N dimension, we call N mma(that in our case, not standard mma), in our case, N = 2, ni = [0, 1]
+        // ii, jj : for each mma in our case, the 8 ele is located in two rows and four cols, here we use ii to denote the row,
+        //          use jj to denote the col
+        // 
+        // that is all about mma (standard mma and that in our case). 
+        // 
+        // Following is some difference when combine with softmax op.
+        // 
+        // one big point is that the softmax is operated with the same row !!!! so for each fragment, wo hope it hold eles
+        // that located in the same row. Thus, we need to adjust the origin fragment into following layout
+        // fragment 0                                       fragment 1
+        // 0_0, 0_1, 0_8, 0_9, 0_64, 0_65, 0_72, 0_73,       8_0, 8_1, 8_8, 8_9, 8_64, 8_65, 8_72, 8_73
+        // that is what softmax.unpack does.
+        // 
+        // that is all about mma combined with softmax.
+        // 
+        // gmem for mask and pos bias has a strong relationship with mentioned mma and softmax op.
+        // Just for quick and convinience, we load the global into register then use it directlly
+        // and the load layout is that same as adjusted layout. So, if you use mask(pos bais) data,
+        // you shold make sure your op is behind softmax.unpack op.
+        // 
+        // In fact, such load op will consume more lds instructions, because we can not use 128 bit ldgs, just tell me why. 
+        // The high performed load method should sepatrate load with using it, it can be shown as followig
+        // 1. using all thread with a cta to load all needed data into register using 128bit ldgs, then store it in share mem,
+        // 2. when use it for computing, load it from share mem as the adjusted layout bby each thread in each warp.
+        // Obviously, it increase a step to swiizle layout in share mem. 
+
+        #pragma unroll
+        for (int mi = 0; mi < Mma_tile::MMAS_M; mi++) {
+            #pragma unroll
+            for (int ni = 0; ni < Mma_tile::MMAS_N; ni++) {
+
+                const void *ptrs[LDGS_PER_THREAD_PER_WARP];
+                uint32_t preds[LDGS_PER_THREAD_PER_WARP];
+
+                #pragma unroll
+                for (int ii = 0; ii < 2; ii++) {
+                    #pragma unroll
+                    for (int jj = 0; jj < 2; jj++) {
+                        int offset = ii * 2 + jj;
+                        int current_row = mi * ROWS + ii * QUADS_PER_WARP;
+                        //NOTE: unit is regs, not ele
+                        int current_col = ni * Cta_tile::WARPS_N * THREADS_PER_QUAD * 2 + jj * THREADS_PER_QUAD; 
+
+                        ptrs[offset] = ptr_ + 
+                                       (uint64_t)current_row * row_stride_in_bytes +
+                                       (uint64_t)current_col * BYTES_PER_LDG;
+
+                        preds[offset] = (current_row < min(ROWS, actual_seqlen_q)) 
+                                    && ((col + current_col * BYTES_PER_LDG / BYTES_PER_ELEMENT) < min(COLS, actual_seqlen_k));
+
+#if defined(DEBUG_USING_CU) && defined(ENABLE_PRINT) 
+                        if (is_block_0()) {
+                            int real_col = col + current_col * BYTES_PER_LDG / BYTES_PER_ELEMENT;
+                            int real_row = ROWS * ldx + row + current_row;
+
+                            printf("Gmem_tile_mask_load_before: ldx = %d, threadIdx.x = %d, threadIdx.y = %d, start pts = %p, mi = %d, ni = %d, ii = %d, jj = %d, real_row = %d, real_col = %d, row = %d, col = %d, pts = %p, preds = %d\n",
+                                ldx, threadIdx.x, threadIdx.y, 
+                                ptr_,
+                                mi, ni, ii, jj, real_row, real_col, row, col, 
+                                reinterpret_cast<char*>(const_cast<void*>(ptrs[offset])),
+                                preds[offset]);
+                        }
+#endif
+                        // TODO(liuwei88) : check this default value
+                        data[mi][ni].reg(offset) = StoreType(0);
+                    }
+                }
+
+                Ldg_functor<StoreType, LDGS_PER_THREAD_PER_WARP> fct(data[mi][ni].regs_, ptrs);
+                #pragma unroll
+                for(int kk = 0; kk < LDGS_PER_THREAD_PER_WARP; ++kk ) {
+                    fct.load(kk, preds[kk]);
+                }
+            }
+        }
+
+#if defined(DEBUG_USING_CU) && defined(ENABLE_PRINT) 
+        if (is_block_0()) {
+            #pragma unroll
+            for (int mi = 0; mi < Mma_tile::MMAS_M; mi++) {
+                #pragma unroll
+                for (int ni = 0; ni < Mma_tile::MMAS_N; ni++) {
+
+                    const void *ptrs[LDGS_PER_THREAD_PER_WARP];
+                    uint32_t preds[LDGS_PER_THREAD_PER_WARP];
+
+                    #pragma unroll
+                    for (int ii = 0; ii < 2; ii++) {
+                        #pragma unroll
+                        for (int jj = 0; jj < 2; jj++) {
+                            int offset = ii * 2 + jj;
+                            int current_row = mi * ROWS + ii * QUADS_PER_WARP;
+                            //NOTE: unit is regs, not ele
+                            int current_col = ni * Cta_tile::WARPS_N * THREADS_PER_QUAD * 2 + jj * THREADS_PER_QUAD; 
+                            int real_row = ROWS * ldx + row + current_row;
+                            int real_col = col + current_col * BYTES_PER_LDG / BYTES_PER_ELEMENT;
+
+                            ptrs[offset] = ptr_ + 
+                                        (uint64_t)current_row * row_stride_in_bytes +
+                                        (uint64_t)current_col * BYTES_PER_LDG;
+
+                            preds[offset] = (current_row < min(ROWS, actual_seqlen_q)) 
+                                        && (real_col < min(COLS, actual_seqlen_k));
+
+                            printf("Gmem_tile_mask_load_after: ldx = %d, threadIdx.x = %03d, threadIdx.y = %03d, mi = %03d, ni = %03d, ii = %03d, jj = %03d, row = %03d, col = %03d, real_row = %03d, real_col = %03d, value = %f, preds = %d\n",
+                                    ldx,
+                                    threadIdx.x,
+                                    threadIdx.y,
+                                    mi,
+                                    ni,
+                                    ii,
+                                    jj,
+                                    row,
+                                    col,
+                                    real_row,
+                                    real_col,
+                                    float(data[mi][ni].elt(offset * 2)),
+                                    preds[offset]
+                            );
+                            printf("Gmem_tile_mask_load_after: ldx = %d, threadIdx.x = %03d, threadIdx.y = %03d, mi = %03d, ni = %03d, ii = %03d, jj = %03d, row = %03d, col = %03d, real_row = %03d, real_col = %03d, value = %f, preds = %d\n",
+                                    ldx,
+                                    threadIdx.x,
+                                    threadIdx.y,
+                                    mi,
+                                    ni,
+                                    ii,
+                                    jj,
+                                    row,
+                                    col,
+                                    real_row,
+                                    real_col + 1,
+                                    float(data[mi][ni].elt(offset * 2 + 1)),
+                                    preds[offset]
+                            );
+
+                        }
+                    }
+
+                }
+            }
+        }
+#endif
+    }
+
+    inline __device__ void move(const int steps = 1) {
+        if (is_none_) {return ;}
+        ptr_ += (uint64_t)ROWS * row_stride_in_bytes * steps;
+        this->actual_seqlen_q -= ROWS * steps;
+#ifdef DEBUG_USING_CU
+        ldx ++;
+#endif
+    }
+
+
+    Fragment data[Mma_tile::MMAS_M][Mma_tile::MMAS_N];
+
+    // The stride between rows for the attn mask.
+    // int64_t row_stride_in_bytes;
+    const uint32_t row_stride_in_bytes;
+    int row;
+    int col;
+    // The pointer.
+    char *ptr_;
+    int actual_seqlen_q;
+    int actual_seqlen_k;
+    // const Gmem_tile tile_;
+    const int tidx_;
+    bool is_none_; // processs when atten_mask is None
+#ifdef DEBUG_USING_CU
+    int ldx = 0;
+#endif
+};
+
 }  // namespace fmha
 

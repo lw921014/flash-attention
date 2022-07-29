@@ -214,7 +214,7 @@ struct Softmax_base {
     }
 
     template<bool zero=false, typename Mask>
-    inline __device__ void apply_mask(const Mask &mask) {
+    inline __device__ void apply_mask( const Mask &mask) {
         #pragma unroll
         for( int mi = 0; mi < MMAS_M; ++mi ) {
             #pragma unroll
@@ -224,7 +224,7 @@ struct Softmax_base {
                     #pragma unroll
                     for( int jj = 0; jj < 4; ++jj ) {
                         if( !mask.is_valid(mi, ni, ii, jj) ) {
-                            elt_[2 * mi + ii][4 * ni + jj] = zero ? 0.f : -INFINITY;
+                            elt_[2 * mi + ii][4 * ni + jj] = -INFINITY;
                         }
                     }
                 }

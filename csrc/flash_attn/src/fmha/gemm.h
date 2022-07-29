@@ -78,6 +78,7 @@ template<
     typename Base_ = Fragment_base_<Data_type_, NUM_ELTS_, 8 * sizeof(Data_type_), ALIGNMENT_>
 >
 struct alignas(static_cast<int>(Base_::ALIGNMENT)) Fragment : public Base_ {
+    using Base = Base_;
 
     // The size of a load/store.
     static constexpr int BYTES_PER_LOAD_STORE = Base_::NUM_REGS * sizeof(uint32_t);

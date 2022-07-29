@@ -151,6 +151,51 @@ def check_kernel():
 
     is_same_matrix(o_cmp, o_data, abs_eps = 0.01)
 
+def check_kernel_with_mask():
+    q_data = get_array_from_file("q_op.data", "test").reshape((49,1,32))
+    k_data = get_array_from_file("k_op.data", "test").reshape((49,1,32))
+    v_data = get_array_from_file("v_op.data", "test").reshape((49,1,32))
+    o_data = get_array_from_file("o_op.data", "test").reshape((49,1,32))
+    mask = get_array_from_file("attn_mask_op.data", "test").reshape((4,64,64))[0,:,:]
+    print(mask)
+    q_data = np.squeeze(q_data)
+    k_data = np.squeeze(k_data)
+    v_data = np.squeeze(v_data)
+    o_data = np.squeeze(o_data)
+
+    def sofmax(logits):
+        e_x = np.exp(logits - np.max(logits))
+        probs = e_x / np.sum(e_x, axis=-1, keepdims=True)
+        return probs
+
+    p = np.matmul(q_data, k_data.transpose(1,0)) / np.sqrt(32)
+    for i in range(p.shape[0]):
+        for j in range(p.shape[1]):
+            if mask[i][j] < 0:
+                p[i][j] = float("-inf")
+
+    print(p)
+    s = sofmax(p)
+    o_cmp = np.matmul(s, v_data)
+    
+    print(o_cmp)
+    print(o_data)
+
+    is_same_matrix(o_cmp, o_data, abs_eps = 0.01)
+
 if __name__ == "__main__":
-    # check_gmem_tile("after_mask.log")
-    check_kernel()
+    parser = argparse.ArgumentParser(description="Check fmha result!")
+    parser.add_argument("--tid",  
+                        type=int,
+                        default=1,
+                        help="tid 0: only fwd op, 1: fwd op with mask, 2: only mask in kernal")
+
+    args = parser.parse_args()
+    if args.tid == 0:
+        check_kernel()
+    elif args.tid == 1:
+        check_kernel_with_mask()
+    elif args.tid == 2:
+        check_gmem_tile("after_mask.log")
+    else:
+        print("unknown tid, please  set tid 0: only fwd op, 1: fwd op with mask, 2: only mask in kernal")

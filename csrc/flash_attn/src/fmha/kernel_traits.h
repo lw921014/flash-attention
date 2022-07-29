@@ -80,6 +80,9 @@ struct FMHA_kernel_traits {
     // The shared memory tile to store dp sum.
     using Smem_dp_sum = fmha::Smem_tile_dp_sum<Gmem_tile_q, 2>;
 
+    // The global memory tile to load attn mask
+    using Gmem_tile_mask = fmha::Gmem_tile_mask<Cta_tile_p>;
+
     // Make sure the number of threads match.
     static_assert((int)Gmem_tile_o::THREADS_PER_ROW == (int)Smem_tile_o::THREADS_PER_ROW, "");
 

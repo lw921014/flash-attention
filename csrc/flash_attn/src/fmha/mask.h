@@ -86,4 +86,87 @@ struct Mask {
     const int actual_seqlen_k;
 };
 
+template<typename Cta_tile, typename Gmem_tile, bool Is_causal=false>
+struct AttnMask {
+    using Mma_tile = fmha::Hmma_tile<Cta_tile>;
+
+    template<typename BInfo>
+    __device__ AttnMask(const BInfo &binfo, const Gmem_tile *tile, int tidx, const int loop_step_idx_ = 0)
+        : actual_seqlen_k(binfo.actual_seqlen_k - loop_step_idx_ * Cta_tile::N)
+        , loop_step_idx(loop_step_idx_), mask_tile(const_cast<Gmem_tile *>(tile)) {
+#ifdef DEBUG_USING_CU
+    ldx = 0;
+#endif
+            const int warp = tidx / Cta_tile::THREADS_PER_WARP;
+            const int lane = tidx % Cta_tile::THREADS_PER_WARP;
+
+            static_assert(Cta_tile::WARPS_K == 1, "");
+
+            // find the warp in the Cta tile
+            const int warp_n = (warp / Cta_tile::WARPS_M);
+            const int warp_m = (warp % Cta_tile::WARPS_M);
+            // decompose warp into 8x4 tile
+            const int quad = lane / 4;
+            const int tid = (lane % 4) * 2;
+            row = warp_m * 16 + quad;
+            col = warp_n * 16 + tid;
+         }
+
+    inline __device__ bool is_valid(const int mi, const int ni, const int ii, const int jj) const {
+        // NOTE: for mask is_valid method, we have two basic funciton
+        // 1. mask all the data which located inside the cta tile and outside the output tile as -infinite
+        // 2. used as common algorithm method in SWIN-T
+        const int current_col = ni * Mma_tile::N_PER_MMA_PER_CTA + col + (jj & 2) * 4 + (jj & 1);
+        const int current_row = row_offset + ii * 8;
+        const bool col_valid = current_col < actual_seqlen_k;
+
+        if (!col_valid) {
+            return false;
+        }
+
+        if (mask_tile->is_none()) {
+            return true;
+        }
+
+        cutlass::half_t value = mask_tile->data[mi][ni].elt(ii * 4 + jj);
+        bool valid = true;
+        valid = float(value) >= 0.0f;
+
+#if defined(DEBUG_USING_CU) && defined(ENABLE_PRINT) 
+        if (is_block_0()) {
+            printf("AttnMask: ldx = %d, threadIdx.x = %03d, threadIdx.y = %03d, mi = %d, ni = %d, ii = %d, jj = %d, value = %f, valid = %d\n",
+                    ldx, threadIdx.x, threadIdx.y, mi, ni, ii, jj, float(value), valid);
+        }
+#endif
+
+        return valid;
+    }
+
+    //BERT Mask: if upper left is invalid, none are valid
+    inline __device__ bool any_valid(const int mi, const int ni) const {
+        return is_valid(mi, ni, 0, 0) || is_valid(mi, ni, 1, 0);
+    }
+
+    inline __device__ void load(const int it) {
+        row_offset = it * Cta_tile::M + row;
+        if (mask_tile != nullptr) {
+            mask_tile->load();
+            mask_tile->move();
+        }
+#ifdef DEBUG_USING_CU
+        ldx ++;
+#endif
+    }
+    int row_offset;
+
+    int row;
+    int col;
+    const int loop_step_idx;
+    const int actual_seqlen_k;
+    Gmem_tile * mask_tile = nullptr;
+#ifdef DEBUG_USING_CU
+    int ldx = 0;
+#endif
+};
+
 }  // namespace fmha

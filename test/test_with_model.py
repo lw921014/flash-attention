@@ -172,6 +172,8 @@ if __name__ == "__main__":
 
     attn_mask = None
 
+    # win
+    logger.info("windows attention")
     win_attn = WindowAttention(
         dim, window_size=to_2tuple(window_size), num_heads=num_heads,
         qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop,
