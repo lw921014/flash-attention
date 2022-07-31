@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from einops import rearrange
 
@@ -26,7 +27,7 @@ class FlashAttention(nn.Module):
         self.dropout_p = attention_dropout
 
     def forward(self, qkv, attn_mask=None, key_padding_mask=None, causal=False, cu_seqlens=None,
-                max_s=None, need_weights=False):
+                max_s=None, need_weights=False, pos_bias = None):
         """Implements the multihead softmax attention.
         Arguments
         ---------
@@ -38,7 +39,6 @@ class FlashAttention(nn.Module):
                          many query each sequence in the batch consists of
         """
         assert not need_weights
-        assert attn_mask is None
         assert qkv.dtype == torch.float16
         assert qkv.is_cuda
 
@@ -51,8 +51,8 @@ class FlashAttention(nn.Module):
                 cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32,
                                         device=qkv.device)
                 output = flash_attn_unpadded_qkvpacked_func(
-                    qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                    softmax_scale=self.softmax_scale, causal=causal
+                    qkv, pos_bias, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                    softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
                 )
                 output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
             else:
@@ -62,8 +62,8 @@ class FlashAttention(nn.Module):
                 x_unpad, indices, cu_seqlens, max_s = unpad_input(x, key_padding_mask_bool)
                 x_unpad = rearrange(x_unpad, 'nnz (three h d) -> nnz three h d', three=3, h=nheads)
                 output_unpad = flash_attn_unpadded_qkvpacked_func(
-                    x_unpad, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                    softmax_scale=self.softmax_scale, causal=causal
+                    x_unpad, pos_bias,cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                    softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
                 )
                 output = rearrange(pad_input(rearrange(output_unpad, 'nnz h d -> nnz (h d)'),
                                             indices, batch_size, seqlen),
@@ -71,8 +71,8 @@ class FlashAttention(nn.Module):
         else:
             assert max_s is not None
             output = flash_attn_unpadded_qkvpacked_func(
-                qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
-                softmax_scale=self.softmax_scale, causal=causal
+                qkv, pos_bias, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                softmax_scale=self.softmax_scale, causal=causal, attn_mask=attn_mask
             )
 
         return output
@@ -87,6 +87,7 @@ class FlashMHA(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.causal = causal
+        self.window_size = window_size  # Wh, Ww
 
         self.num_heads = num_heads
         assert self.embed_dim % num_heads == 0, "self.kdim must be divisible by num_heads"
@@ -113,8 +114,29 @@ class FlashMHA(nn.Module):
         if 'proj_bias' in init_para.keys():
             self.out_proj.bias = torch.nn.Parameter(init_para["proj_bias"])
 
+        # for pos bias
+            # define a parameter table of relative position bias
+        self.relative_position_bias_table = nn.Parameter(
+            torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads))  # 2*Wh-1 * 2*Ww-1, nH
+
+        # get pair-wise relative position index for each token inside the window
+        coords_h = torch.arange(self.window_size[0])
+        coords_w = torch.arange(self.window_size[1])
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
+        relative_coords[:, :, 0] += self.window_size[0] - 1  # shift to start from 0
+        relative_coords[:, :, 1] += self.window_size[1] - 1
+        relative_coords[:, :, 0] *= 2 * self.window_size[1] - 1
+        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        self.register_buffer("relative_position_index", relative_position_index)
+
+        # TODO(liuwei88): may need this in the future
+        # runc_normal_(self.relative_position_bias_table, std=.02)
+
     def forward(self, x, x_ignored_, x_ignored_1_, attn_mask=None, key_padding_mask=None,
-                need_weights=False):
+                need_weights=False, pos_bias=None):
         qkv = self.Wqkv(x)
         if self.use_rotary_emb:
             query, key, value = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3,
@@ -123,6 +145,22 @@ class FlashMHA(nn.Module):
             qkv = torch.stack([query, key, value], dim=2)
         else:
             qkv = rearrange(qkv, 'b s (three h d) -> b s three h d', three=3, h=self.num_heads)
-        context = self.inner_attn(qkv, key_padding_mask=key_padding_mask,
-                                                need_weights=need_weights, causal=self.causal)
+
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+
+        # NOTE: add some hard code for quick test in Swin-T, need to fix it in the future
+        # forcely padding mask seq_q and seq_k to 64, keep other dim the same
+        relative_position_bias = F.pad(relative_position_bias, (0, 15, 0, 15), mode='constant', value=0).contiguous()
+
+        # NOTE: add some hard code for quick test in Swin-T, need to fix it in the future
+        # forcely padding mask seq_q and seq_k to 64, keep other dim the same
+        if attn_mask is not None:
+            # print(attn_mask.size())
+            attn_mask = F.pad(attn_mask, (0, 15, 0, 15), mode='constant', value=0).contiguous()
+
+        context = self.inner_attn(qkv, attn_mask=attn_mask, key_padding_mask=key_padding_mask,
+                                                need_weights=need_weights, causal=self.causal,
+                                                pos_bias = relative_position_bias)
         return self.out_proj(rearrange(context, 'b s h d -> b s (h d)'))

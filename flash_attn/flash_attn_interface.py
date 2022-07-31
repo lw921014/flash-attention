@@ -3,6 +3,16 @@ import torch.nn as nn
 
 import flash_attn_cuda
 
+import logging
+import logging.handlers
+
+logger = logging.getLogger("flash_atten_interface")
+logger.setLevel(logging.INFO)
+
+rf_handler = logging.StreamHandler()
+rf_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(filename)s[:%(lineno)d] - %(message)s"))
+
+logger.addHandler(rf_handler)
 
 def _get_block_size(device, head_dim, is_dropout):
     assert head_dim in [16, 32, 64, 128]
@@ -14,11 +24,29 @@ def _get_block_size(device, head_dim, is_dropout):
         return 256 if (torch.cuda.get_device_capability(device) == (8, 0) and not is_dropout) else 128
 
 
-def _flash_attn_forward(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p,
-                        softmax_scale, causal, return_softmax):
+def _flash_attn_forward(q, k, v, pos_bias, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p,
+                        softmax_scale, causal, return_softmax, attn_mask):
+    if attn_mask is not None:
+        logger.debug(f"q.size =  {q.size()}, "
+                    f"k.size =  {k.size()}, "
+                    f"v.size =  {v.size()}, "
+                    f"cu_seqlens_q.size =  {cu_seqlens_q.size()}, "
+                    f"cu_seqlens_k.size = {cu_seqlens_k.size()}, "
+                    f"max_seqlen_q =  {max_seqlen_q}, "
+                    f"max_seqlen_k =  {max_seqlen_k}, "
+                    f"attn_mask.size =  {attn_mask.size()}")  
+    else:
+        logger.debug(f"q.size =  {q.size()}, "
+                    f"k.size =  {k.size()}, "
+                    f"v.size =  {v.size()}, "
+                    f"cu_seqlens_q.size =  {cu_seqlens_q.size()}, "
+                    f"cu_seqlens_k.size = {cu_seqlens_k.size()}, "
+                    f"max_seqlen_q =  {max_seqlen_q}, "
+                    f"max_seqlen_k =  {max_seqlen_k}")  
+
     out, softmax_lse, *rest = flash_attn_cuda.fwd(
-        q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p, softmax_scale,
-        False, causal, return_softmax, None
+        q, k, v, pos_bias, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, dropout_p, softmax_scale,
+        False, causal, return_softmax, None, attn_mask
     )
     # if out.isnan().any() or softmax_lse.isnan().any():
     #     breakpoint()
@@ -26,10 +54,10 @@ def _flash_attn_forward(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_s
     return out, softmax_lse, S_dmask
 
 
-def _flash_attn_backward(dout, q, k, v, out, softmax_lse, dq, dk, dv, cu_seqlens_q, cu_seqlens_k,
+def _flash_attn_backward(dout, q, k, v, out,  pos_bias, softmax_lse, dq, dk, dv, cu_seqlens_q, cu_seqlens_k, attn_mask,
                          max_seqlen_q, max_seqlen_k, dropout_p, softmax_scale, causal):
     softmax_d = flash_attn_cuda.bwd(
-        dout, q, k, v, out, softmax_lse, dq, dk, dv, cu_seqlens_q, cu_seqlens_k,
+        dout, q, k, v, out, pos_bias, softmax_lse, dq, dk, dv, cu_seqlens_q, cu_seqlens_k, attn_mask,
         max_seqlen_q, max_seqlen_k, dropout_p, softmax_scale, False, causal, None)
     # if dk.isnan().any() or dk.isnan().any() or dv.isnan().any() or softmax_d.isnan().any():
     #     breakpoint()
@@ -39,37 +67,47 @@ def _flash_attn_backward(dout, q, k, v, out, softmax_lse, dq, dk, dv, cu_seqlens
 class FlashAttnQKVPackedFunc(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale, causal, return_softmax):
+    def forward(ctx, qkv, pos_bias, cu_seqlens, max_seqlen, dropout_p, softmax_scale, causal, return_softmax, attn_mask):
         # Save rng_state because the backward pass will regenerate the dropout mask
         rng_state = torch.cuda.get_rng_state() if dropout_p > 0 else None
         if softmax_scale is None:
             softmax_scale = qkv.shape[-1] ** (-0.5)
+        logger.debug("run forward before")
         out, softmax_lse, S_dmask = _flash_attn_forward(
-            qkv[:, 0], qkv[:, 1], qkv[:, 2], cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
-            dropout_p, softmax_scale, causal=causal, return_softmax=return_softmax
+            qkv[:, 0], qkv[:, 1], qkv[:, 2], pos_bias, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen,
+            dropout_p, softmax_scale, causal=causal, return_softmax=return_softmax,
+            attn_mask=attn_mask
         )
-        ctx.save_for_backward(qkv, out, softmax_lse, cu_seqlens, rng_state)
+        ctx.save_for_backward(qkv, out, softmax_lse, cu_seqlens, rng_state, pos_bias, attn_mask)
         ctx.dropout_p = dropout_p
         ctx.max_seqlen = max_seqlen
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
+        logger.debug("run forward after" )
+
         return out if not return_softmax else (out, softmax_lse, S_dmask)
 
     @staticmethod
     def backward(ctx, dout, *args):
-        qkv, out, softmax_lse, cu_seqlens, rng_state = ctx.saved_tensors
+        qkv, out, softmax_lse, cu_seqlens, rng_state, pos_bias, attn_mask = ctx.saved_tensors
         if rng_state is not None:
             cur_rng_state = torch.cuda.get_rng_state()
             torch.cuda.set_rng_state(rng_state)
         dqkv = torch.empty_like(qkv)
+        dpos_bias = torch.zeros((cu_seqlens.shape[0] - 1, dout.shape[1], 64, 64), dtype=torch.half, device="cuda")
+        
+        logger.debug("run backward before")
         _flash_attn_backward(
             dout, qkv[:, 0], qkv[:, 1], qkv[:, 2], out, softmax_lse,
-            dqkv[:, 0], dqkv[:, 1], dqkv[:, 2], cu_seqlens, cu_seqlens,
+            dqkv[:, 0], dqkv[:, 1], dqkv[:, 2], dpos_bias, cu_seqlens, cu_seqlens, attn_mask,
             ctx.max_seqlen, ctx.max_seqlen, ctx.dropout_p, ctx.softmax_scale, ctx.causal
         )
         if rng_state is not None:
             torch.cuda.set_rng_state(cur_rng_state)
-        return dqkv, None, None, None, None, None, None
+        logger.debug("run backward after")
+        # TODO(liuwei88): use none for bias dgrad stub, need to cahnge it in the future
+        # return dqkv, None, None, None, None, None, None, None, None
+        return dqkv, dpos_bias.mean(axis=[0], keepdim=False), None, None, None, None, None, None, None
 
 
 class FlashAttnKVPackedFunc(torch.autograd.Function):
@@ -148,8 +186,8 @@ class FlashAttnFunc(torch.autograd.Function):
         return dq, dk, dv, None, None, None, None, None, None, None, None
 
 
-def flash_attn_unpadded_qkvpacked_func(qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale=None,
-                                       causal=False, return_attn_probs=False):
+def flash_attn_unpadded_qkvpacked_func(qkv, pos_bias, cu_seqlens, max_seqlen, dropout_p, softmax_scale=None,
+                                       causal=False, return_attn_probs=False, attn_mask=None):
     """dropout_p should be set to 0.0 during evaluation
     Arguments:
         qkv: (total, 3, nheads, headdim), where total = total number of tokens in the batch.
@@ -172,8 +210,8 @@ def flash_attn_unpadded_qkvpacked_func(qkv, cu_seqlens, max_seqlen, dropout_p, s
             The output of softmax (possibly with different scaling). It also encodes the dropout
             pattern (negative means that location was dropped, nonnegative means it was kept).
     """
-    return FlashAttnQKVPackedFunc.apply(qkv, cu_seqlens, max_seqlen, dropout_p, softmax_scale,
-                                        causal, return_attn_probs)
+    return FlashAttnQKVPackedFunc.apply(qkv, pos_bias, cu_seqlens, max_seqlen, dropout_p, softmax_scale,
+                                        causal, return_attn_probs, attn_mask)
 
 
 def flash_attn_unpadded_kvpacked_func(q, kv, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k,
