@@ -8,6 +8,7 @@ from flash_attn.rotary import RotaryEmbedding, RotaryEmbedding2D
 from flash_attn.flash_attn_interface import flash_attn_unpadded_qkvpacked_func
 from flash_attn.bert_padding import unpad_input, pad_input, index_first_axis
 
+import numpy as np
 
 class FlashAttention(nn.Module):
     """Implement the scaled dot product attention with softmax.
@@ -79,8 +80,8 @@ class FlashAttention(nn.Module):
 
 class FlashMHA(nn.Module):
 
-    def __init__(self, embed_dim, num_heads, bias=True, batch_first=True, attention_dropout=0.0,
-                 causal=False, use_rotary_emb=None, device=None, dtype=None, **kwargs) -> None:
+    def __init__(self, embed_dim, window_size, num_heads, bias=True, batch_first=True, attention_dropout=0.0,
+                 causal=False, use_rotary_emb=None, device=None, dtype=None, init_para = {}, **kwargs) -> None:
         assert batch_first
         factory_kwargs = {'device': device, 'dtype': dtype}
         super().__init__()
@@ -102,6 +103,15 @@ class FlashMHA(nn.Module):
         self.Wqkv = nn.Linear(embed_dim, 3 * embed_dim, bias=bias, **factory_kwargs)
         self.inner_attn = FlashAttention(attention_dropout=attention_dropout, **factory_kwargs)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+
+        if 'qkv_weight' in init_para.keys():
+            self.Wqkv.weight = torch.nn.Parameter(init_para["qkv_weight"])
+        if 'qkv_bias' in init_para.keys():
+            self.Wqkv.bias = torch.nn.Parameter(init_para["qkv_bias"])
+        if 'proj_weight' in init_para.keys():
+            self.out_proj.weight = torch.nn.Parameter(init_para["proj_weight"])
+        if 'proj_bias' in init_para.keys():
+            self.out_proj.bias = torch.nn.Parameter(init_para["proj_bias"])
 
     def forward(self, x, x_ignored_, x_ignored_1_, attn_mask=None, key_padding_mask=None,
                 need_weights=False):

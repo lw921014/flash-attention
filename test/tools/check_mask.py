@@ -3,6 +3,7 @@ import numpy as np
 import logging
 import logging.handlers
 from operator import itemgetter, attrgetter
+from check_tool import is_same_matrix, get_array_from_file 
 
 logger = logging.getLogger("demo-infer")
 logger.setLevel(logging.DEBUG)
@@ -11,88 +12,6 @@ rf_handler = logging.StreamHandler()
 rf_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(filename)s[:%(lineno)d] - %(message)s"))
 
 logger.addHandler(rf_handler)
-
-def get_meta_info(line):
-    meta = line.strip().split(",")
-
-    def _split(s):
-        return [_s.strip() for _s in s.split("=")]
-
-    meta_map = {}
-    for item in meta:
-        tmp = _split(item)
-        meta_map[tmp[0]] = tmp[1]
-    
-    return meta_map["name"], int(meta_map["count"]), int(meta_map["lda"]), meta_map["position"], meta_map["type"]
-
-def line_to_data(line):
-    tmp = line.strip().split(",")
-
-    def _process(info):
-        return [float(i.strip()) for i in info[1:-1].split(":")]
-
-    ret = []
-    for item in tmp:
-        if len(item) == 0:
-            continue
-        else:
-            ret.append(_process(item.strip())[1]) 
-    return ret
-
-def get_array_from_file(file_name, tensor_name):
-    ret = []
-    name = ""
-    count = 0
-    lda = 0
-    find = False
-    meta_info = ""
-    with open(file_name, 'r') as fp:
-        for line in fp:
-            line = line.strip()
-            if line.strip().startswith("name"):
-                name, count, lda, _, _ = get_meta_info(line)
-                if name == tensor_name:
-                    find = True
-                    continue
-            if find and line.startswith("["):
-                ret.extend(line_to_data(line))
-                if len(ret) == count:
-                    break
-
-    return np.array(ret)
-
-def get_ele_from_line(line, key):
-    index=0
-    if key == "l":
-        index = 26
-    if line.find(key, index) != -1:
-        val = line[line.find(key, index) : len(line)].split("=")[1].split(",")[0]
-        # print(f" key = {key}, val={val}")
-        return float(val)
-    
-    raise f"not find {key} in {line}"
-
-def get_inf_id_from_line(line):
-    def findall(string, s):
-        ret = []
-        index = 0
-
-        while True:
-            index = string.find(s, index)
-            if index != -1:
-                ret.append(index)
-                index += len(s)
-            else:
-                break
-
-        return ret
-
-    all_pos = findall(line, "inf")
-
-    id = []
-    for pos in all_pos:
-        id.append(int(line[pos - 6 : pos - 5]))
-    return id
 
 def get_orrd(l, threadIdx, i_m, id):
     warp_id = int(threadIdx / 32) 
@@ -203,23 +122,6 @@ def check_gmem_tile(file_name):
         check(mask, mask_ref)
         check(mask, mask_ref, True)
 
-def is_same_matrix(test, groud_truth, label = "test", eps = 0.01):  
-    logger.info("\n\n============= %s =============" % label)
-    print("test shape is:", test.shape)  
-    print("groud truth shape is:", groud_truth.shape)  
-    diff = np.abs(test - groud_truth) / np.abs(groud_truth)
-    is_true = (diff < eps).all()
-    
-    if not is_true:
-        print("test data is")
-        print(test)
-        print("groud truth data is")
-        print(groud_truth)
-        print("diff is")
-        print(diff)
-        print("diff pos matrix is")
-        # print(np.abs(test - groud_truth) < eps)
-
     print("%s" % ("passed" if is_true else "failed"))
     print("\n================================================\n")
     return is_true
@@ -247,7 +149,7 @@ def check_kernel():
     print(o_cmp)
     print(o_data)
 
-    is_same_matrix(o_cmp, o_data, eps = 0.1)
+    is_same_matrix(o_cmp, o_data, abs_eps = 0.01)
 
 if __name__ == "__main__":
     # check_gmem_tile("after_mask.log")
