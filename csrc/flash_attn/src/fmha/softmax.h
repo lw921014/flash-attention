@@ -223,8 +223,10 @@ struct Softmax_base {
                 for( int ni = 0; ni < MMAS_N; ++ni ) {
                     #pragma unroll
                     for( int jj = 0; jj < 4; ++jj ) {
-                        if( !mask.is_valid(mi, ni, ii, jj) ) {
+                        if( mask.is_valid(mi, ni, ii, jj) == COL_INVALID) {
                             elt_[2 * mi + ii][4 * ni + jj] = -INFINITY;
+                        } else if (mask.is_valid(mi, ni, ii, jj) == ELE_INVALID) {
+                            elt_[2 * mi + ii][4 * ni + jj] += -100.0;
                         }
                     }
                 }

@@ -112,7 +112,10 @@ struct AttnMask {
             col = warp_n * 16 + tid;
          }
 
-    inline __device__ bool is_valid(const int mi, const int ni, const int ii, const int jj) const {
+    #define COL_INVALID -1
+    #define ELE_INVALID -2
+    #define ALL_VALID 0
+    inline __device__ int is_valid(const int mi, const int ni, const int ii, const int jj) const {
         // NOTE: for mask is_valid method, we have two basic funciton
         // 1. mask all the data which located inside the cta tile and outside the output tile as -infinite
         // 2. used as common algorithm method in SWIN-T
@@ -121,11 +124,11 @@ struct AttnMask {
         const bool col_valid = current_col < actual_seqlen_k;
 
         if (!col_valid) {
-            return false;
+            return COL_INVALID;
         }
 
         if (mask_tile->is_none()) {
-            return true;
+            return ALL_VALID;
         }
 
         cutlass::half_t value = mask_tile->data[mi][ni].elt(ii * 4 + jj);
@@ -139,12 +142,12 @@ struct AttnMask {
         }
 #endif
 
-        return valid;
+        return valid ? ALL_VALID : ELE_INVALID;
     }
 
     //BERT Mask: if upper left is invalid, none are valid
     inline __device__ bool any_valid(const int mi, const int ni) const {
-        return is_valid(mi, ni, 0, 0) || is_valid(mi, ni, 1, 0);
+        return is_valid(mi, ni, 0, 0) == ALL_VALID || is_valid(mi, ni, 1, 0) == ALL_VALID;
     }
 
     inline __device__ void load(const int it) {
